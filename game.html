@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TRPG協力バトル 試作</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{overflow:hidden;background:#111;color:#eee;font:13px/1.4 system-ui,sans-serif;touch-action:none;user-select:none}
+canvas{display:block}
+button,input{font:inherit;padding:9px 12px;border-radius:8px;border:1px solid #567;background:#1d2a38;color:#eee}
+button.on{background:#d89a30;border-color:#fd8;color:#111}
+#menu{position:fixed;inset:0;background:#10151c;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px;z-index:10;text-align:center;overflow:auto}
+#menu h1{font-size:20px}#menu small{color:#9ab;max-width:420px}
+#cls{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+#hud{position:fixed;inset:0;pointer-events:none;padding:env(safe-area-inset-top) 8px env(safe-area-inset-bottom)}
+#hud button{pointer-events:auto}
+#top{position:absolute;top:calc(env(safe-area-inset-top) + 6px);left:8px;background:#000a;padding:6px 10px;border-radius:8px;max-width:58%}
+#bar{height:5px;background:#333;border-radius:3px;margin-top:4px}#bar i{display:block;height:100%;width:0;background:#fb4;border-radius:3px}
+#party{position:absolute;top:calc(env(safe-area-inset-top) + 6px);right:8px;background:#000a;padding:6px 8px;border-radius:8px;font-size:12px;min-width:110px}
+#order{position:absolute;top:calc(env(safe-area-inset-top) + 70px);right:8px;background:#000a;padding:6px 8px;border-radius:8px;font-size:11px;max-width:45%}
+#log{position:absolute;left:8px;right:8px;bottom:calc(env(safe-area-inset-bottom) + 108px);font-size:12px;text-shadow:0 1px 2px #000;max-height:110px;overflow:hidden}
+#acts{position:absolute;left:6px;right:6px;bottom:calc(env(safe-area-inset-bottom) + 6px);display:flex;flex-wrap:wrap;gap:5px;justify-content:center}
+#acts button{flex:1 1 22%;min-width:70px;padding:10px 4px;background:#16202cdd}
+#acts button.on{background:#d89a30}
+#me{color:#fd8;font-size:12px;margin-top:3px}
+#labels div.l{position:fixed;transform:translate(-50%,-100%);text-align:center;font-size:11px;white-space:nowrap;pointer-events:none;text-shadow:0 1px 2px #000}
+.hp{width:56px;height:5px;background:#400;margin:1px auto;border:1px solid #000}.hp i{display:block;height:100%;background:#4c4}
+.num{position:fixed;transform:translate(-50%,-50%);font-weight:bold;font-size:20px;pointer-events:none;text-shadow:0 0 3px #000;animation:fl 1.1s forwards}
+@keyframes fl{to{margin-top:-60px;opacity:0}}
+</style></head><body>
+<div id="menu">
+<h1>TRPG協力バトル 試作</h1>
+<small>同時に行動予約 → 同時に演出 → 素早さ順に判定。命中はd20と能力値で決まります。</small>
+<input id="nm" placeholder="名前" maxlength="8" value="冒険者">
+<div id="cls"></div>
+<button id="b1">1人で試す</button>
+<button id="b2">部屋を作る（ホスト）</button>
+<div><input id="code" placeholder="部屋コード" size="8" maxlength="4"> <button id="b3">参加する</button></div>
+<small>操作：WASD／矢印キー、または画面タップで移動。敵やなかまをタップで対象選択。敵に近づくと戦闘開始。下のボタンで行動を予約（演出中も次の予約OK、未予約は防御）。</small>
+</div>
+<div id="hud" hidden>
+<div id="top"><div id="room"></div><div id="ph"></div><div id="bar"><i></i></div><div id="me"></div></div>
+<div id="party"></div><div id="order" hidden></div><div id="log"></div><div id="acts"></div>
+</div>
+<div id="labels"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+/* ===== 設定（ここの数値を変えて調整できます。すべて仮の値） ===== */
+const CFG={reserve:5,min:.6,speed:5,aggro:10,step:.75};
+const mod=s=>Math.floor((s-10)/2),d=n=>1+Math.floor(Math.random()*n),roll=(n,s,b=0)=>{let t=b;for(let i=0;i<n;i++)t+=d(s);return t};
+const CL={
+warrior:{n:'戦士',col:0x4a7bd0,hp:50,ac:15,str:16,dex:10,int:8,spd:5,rng:2.6,st:'str',dm:[1,8]},
+mage:{n:'魔術師',col:0xa04ad0,hp:30,ac:11,str:8,dex:12,int:17,spd:6,rng:9,st:'int',dm:[1,6]},
+scout:{n:'斥候',col:0x3bb06a,hp:36,ac:13,str:10,dex:17,int:10,spd:9,rng:7,st:'dex',dm:[1,6]},
+healer:{n:'治癒師',col:0xe0c04a,hp:38,ac:12,str:10,dex:10,int:16,spd:4,rng:4,st:'int',dm:[1,6]}};
+const SK={warrior:{n:'盾打ち',tg:'e',rng:2.6,dm:[1,6]},mage:{n:'火球',tg:'e',rng:9,dm:[2,6]},scout:{n:'急所撃ち',tg:'e',rng:7,dm:[1,8],crit:18},healer:{n:'治癒',tg:'a',rng:7}};
+const AC={atk:{n:'攻撃',tg:'e'},heavy:{n:'強攻撃',tg:'e',hit:-3,m:1.6},skill:{tg:'x'},guard:{n:'防御'},dodge:{n:'回避'},parry:{n:'受け流し'},aid:{n:'援護',tg:'a'}};
+const EN={goblin:{n:'ゴブリン',hp:28,ac:12,hit:4,dm:[1,6,2],spd:7,rng:2.2,mv:2.6,sc:1,col:0x6aa84f},
+archer:{n:'ゴブリン弓兵',hp:22,ac:12,hit:4,dm:[1,6,1],spd:8,rng:8,mv:2,sc:1,col:0x93c47d},
+ogre:{n:'オーガ',hp:90,ac:13,hit:5,dm:[2,6,3],spd:4,rng:3,mv:1.8,sc:1.9,col:0xb45f4a}};
+const GRP=[{x:14,z:0,u:['goblin','goblin']},{x:-4,z:-18,u:['goblin','archer','goblin']},{x:-20,z:8,u:['ogre']}];
+const $=id=>document.getElementById(id);
+
+/* ===== ホスト側ロジック（判定はすべてホストが決める） ===== */
+let isHost=false,myId=null,conns={},peer=null,conn=null,A={},B={ph:'idle',tm:0,rd:0,eng:[],el:0},sched=[],clock=0,snapAcc=0;
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
+const foes=a=>Object.values(A).filter(o=>o.team!==a.team&&o.alive);
+const qn=(a,q)=>(q.a==='skill'?SK[a.cls].n:AC[q.a].n)+(A[q.t]?'→'+A[q.t].name:'');
+const at=(t,fn)=>sched.push({t:clock+t,fn});
+function ev(o){onMsg(o);Object.values(conns).forEach(c=>c.open&&c.send(o))}
+const log=m=>ev({t:'log',m});
+const num=(T,x,c)=>ev({t:'num',id:T.id,x,c});
+function mkP(id,name,cls){const c=CL[cls],m=mod(c[c.st]),n=Object.values(A).filter(a=>a.team==='p').length;
+A[id]={id,team:'p',name,cls,x:-8+n*1.6,z:6,ry:0,hp:c.hp,mhp:c.hp,ac:c.ac,spd:c.spd,rng:c.rng,hit:m+2,dm:[c.dm[0],c.dm[1],m],alive:1,st:{},q:null}}
+function initWorld(){GRP.forEach((g,gi)=>g.u.forEach((k,i)=>{const e=EN[k];A['e'+gi+'_'+i]={id:'e'+gi+'_'+i,team:'e',name:e.n,cls:k,x:g.x+(i%2)*2.5,z:g.z+i*2,ry:0,hp:e.hp,mhp:e.hp,ac:e.ac,spd:e.spd,rng:e.rng,hit:e.hit,dm:e.dm,mv:e.mv,sc:e.sc,col:e.col,alive:1,st:{},q:null,g:gi}}))}
+function aiPick(a){const f=foes(a);if(!f.length)return null;const r=Math.random();if(r>.85)return{a:'guard'};
+const inR=f.filter(p=>dist(a,p)<=a.rng+.3);f.sort((x,y)=>dist(a,x)-dist(a,y));const pool=inR.length?inR:[f[0]];
+return{a:r<.6?'atk':'heavy',t:pool[Math.floor(Math.random()*pool.length)].id}}
+function fxOf(a,q){const k=q.a,sk=k==='skill'?SK[a.cls]:null,T=A[q.t];
+if(k==='guard'||k==='dodge'||k==='parry')return ev({t:'fx',k:'def',a:a.id,c:k==='guard'?0x66ccff:k==='dodge'?0xcccccc:0xffffff});
+if(k==='aid'||(sk&&sk.tg==='a'))return ev({t:'fx',k:'def',a:a.id,c:0x66ff66});
+const rng=sk?sk.rng:a.rng;ev({t:'fx',k:rng<=3?'melee':'bolt',a:a.id,t2:T&&T.id,c:a.team==='p'?(k==='skill'&&a.cls==='mage'?0xff6622:CL[a.cls].col):0xff4444})}
+function kill(T){T.hp=0;T.alive=0;T.q=null;log(`💀 ${T.name}が倒れた`)}
+function resolve(a,q){
+if(!a.alive)return;const k=q.a,sk=k==='skill'?SK[a.cls]:null,name=sk?sk.n:AC[k].n;
+if(a.st.stun){a.st.stun=0;log(`${a.name}は怯んで動けない！`);num(a,'行動不能','#fa4');return}
+if(k==='guard'||k==='dodge'||k==='parry'){log(`${a.name}は${name}の構え`);return}
+const heal=k==='aid'||(sk&&sk.tg==='a');let T=A[q.t];
+if(heal){if(!T)T=a}else if(!T||!T.alive){T=foes(a).sort((x,y)=>dist(a,x)-dist(a,y))[0];if(!T)return}
+const rng=sk?sk.rng:a.rng,D=dist(a,T);
+if(D>rng+.3){log(`${a.name}の${name}は射程外！（${D.toFixed(1)}m > ${rng}m）`);num(a,'射程外','#aaa');return}
+if(k==='aid'){T.st.aid=1;log(`${a.name}が${T.name}を援護（AC+3）`);return}
+if(sk&&sk.tg==='a'){if(!T.alive){T.alive=1;T.hp=Math.ceil(T.mhp*.25);log(`✨ ${a.name}の治癒で${T.name}が復活！`);num(T,'復活','#6f6')}
+else{const h=roll(2,6,a.dm[2]);T.hp=Math.min(T.mhp,T.hp+h);log(`${a.name}の治癒 → ${T.name} +${h}`);num(T,'+'+h,'#6f6')}return}
+let r=d(20);const dodge=T.st.dodge;if(dodge)r=Math.min(r,d(20));
+const hm=a.hit+(AC[k].hit||0),tot=r+hm,ac=T.ac+(T.st.guard?4:0)+(dodge?2:0)+(T.st.aid?3:0);
+const crit=r>=((sk&&sk.crit)||20),hit=r>1&&(crit||tot>=ac);
+const txt=`${a.name}の${name}→${T.name} 🎲${r}${hm>=0?'+':''}${hm}=${tot} vs AC${ac}${dodge?'(回避:不利)':''}`;
+if(!hit){log(txt+' ミス');num(T,'MISS','#aaa');return}
+if(T.st.parry&&rng<=3){const pr=d(20)+Math.max(T.hit,1);
+if(pr>=13){const c=d(6);log(txt+` 命中→受け流し成功(🎲${pr})！反撃${c}`);num(T,'PARRY','#fff');a.hp-=c;num(a,'-'+c,'#f66');if(a.hp<=0)kill(a);return}
+log(txt+` 命中、受け流し失敗(🎲${pr})`)}
+const [n,s,b]=sk?[sk.dm[0],sk.dm[1],a.dm[2]]:a.dm;let dm=roll(n,s,b)*(AC[k].m||1);if(crit)dm*=2;if(T.st.guard)dm/=2;dm=Math.max(1,Math.floor(dm));
+T.hp-=dm;if(sk&&a.cls==='warrior')T.st.stun=1;
+if(!T.st.parry||true){log(`${txt} ${crit?'クリティカル！':'命中'} ${dm}ダメージ${T.st.guard?'(防御で半減)':''}`)}
+num(T,'-'+dm,'#f66');if(T.hp<=0)kill(T)}
+function perform(){B.ph='perform';B.rd++;const L=[];
+Object.values(A).filter(a=>a.alive&&(a.team==='p'||B.eng.includes(a.g))).forEach(a=>{let q=a.team==='p'?a.q:aiPick(a);
+if(!q){q={a:'guard'};if(a.team==='p')log(`${a.name}は未予約→防御`)}a.q=null;if(['guard','dodge','parry'].includes(q.a))a.st[q.a]=1;L.push({a,q})});
+L.sort((x,y)=>y.a.spd-x.a.spd||Math.random()-.5);
+ev({t:'order',o:L.map(x=>`${x.a.name}：${qn(x.a,x.q)}`)});log(`── ラウンド${B.rd} ──`);
+at(.3,()=>L.forEach(x=>fxOf(x.a,x.q)));
+L.forEach((x,i)=>at(1+i*CFG.step,()=>resolve(x.a,x.q)));
+at(1+L.length*CFG.step+.6,endPerform)}
+function endPerform(){Object.values(A).forEach(a=>a.st={});if(!checkEnd()){B.ph='reserve';B.tm=CFG.reserve;B.el=0}}
+function checkEnd(){const all=Object.values(A),P=all.filter(a=>a.team==='p'),E=all.filter(a=>a.team==='e');
+if(P.length&&!P.some(p=>p.alive)){log('☠ 全滅… 最初からやり直します');P.forEach(p=>{p.hp=p.mhp;p.alive=1;p.q=null});E.forEach(e=>delete A[e.id]);initWorld();B.eng=[];B.ph='idle';ev({t:'tp'});return 1}
+if(B.eng.every(g=>!E.some(e=>e.g===g&&e.alive))){P.forEach(p=>{if(!p.alive){p.alive=1;p.hp=Math.ceil(p.mhp*.4)}else p.hp=Math.min(p.mhp,p.hp+Math.ceil(p.mhp*.25))});
+B.eng=[];B.ph='idle';log(E.some(e=>e.alive)?'🏆 戦闘に勝利！（HP少し回復）':'🎉 全ての敵を倒した！クリア！');return 1}return 0}
+function tick(dt){clock+=dt;const due=sched.filter(s=>s.t<=clock);sched=sched.filter(s=>s.t>clock);due.forEach(s=>s.fn());
+const all=Object.values(A),P=all.filter(a=>a.team==='p'),E=all.filter(a=>a.team==='e');
+for(const e of E)if(e.alive&&!B.eng.includes(e.g)&&P.some(p=>p.alive&&dist(p,e)<CFG.aggro))B.eng.push(e.g);
+if(B.ph==='idle'&&B.eng.length){B.ph='reserve';B.tm=CFG.reserve;B.el=0;log('⚔ 戦闘開始！ 行動を予約しよう')}
+else if(B.ph==='reserve'){B.tm-=dt;B.el+=dt;const al=P.filter(p=>p.alive);
+if(!al.length)checkEnd();else if(B.tm<=0||(B.el>=CFG.min&&al.every(p=>p.q)))perform()}
+for(const e of E){if(!e.alive||!B.eng.includes(e.g))continue;const al=P.filter(p=>p.alive);if(!al.length)break;
+al.sort((x,y)=>dist(e,x)-dist(e,y));const n=al[0],D=dist(e,n);if(D>e.rng*.8){e.x+=(n.x-e.x)/D*e.mv*dt;e.z+=(n.z-e.z)/D*e.mv*dt}e.ry=Math.atan2(n.x-e.x,n.z-e.z)}
+snapAcc+=dt;if(snapAcc>=.1){snapAcc=0;const s={t:'s',B:{ph:B.ph,tm:+B.tm.toFixed(1),rd:B.rd,mx:CFG.reserve},P:all.map(a=>({id:a.id,tm:a.team,n:a.name,c:a.cls,x:+a.x.toFixed(2),z:+a.z.toFixed(2),ry:+a.ry.toFixed(2),h:a.hp,m:a.mhp,al:a.alive,q:a.q?qn(a,a.q):'',sc:a.sc||1,col:a.col}))};onMsg(s);Object.values(conns).forEach(c=>c.open&&c.send(s))}}
+function hostRecv(id,m,c){
+if(m.t==='join'){mkP(id,m.name,m.cls);if(c)c.send({t:'hi',id});log(`${m.name}が参加した`);return}
+const a=A[id];if(!a)return;
+if(m.t==='pos'){a.x=m.x;a.z=m.z;a.ry=m.ry}
+else if(m.t==='act'&&a.alive&&B.ph!=='idle')a.q={a:m.a,t:m.tg}}
+const send=m=>isHost?hostRecv('H',m):conn&&conn.open&&conn.send(m);
+
+/* ===== 画面側（全員が同じコードで描画） ===== */
+let S=null,me={x:-8,z:6,ry:0,init:0},sel=null,goal=null,logs=[],view={},fxs=[],keys={},myCls='warrior',lastT=0,posAcc=0;
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x9ec7e6);scene.fog=new THREE.Fog(0x9ec7e6,40,90);
+const cam=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,.1,200);
+const rd=new THREE.WebGLRenderer({antialias:true});rd.setSize(innerWidth,innerHeight);rd.setPixelRatio(Math.min(devicePixelRatio,2));document.body.prepend(rd.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff,0x446644,.9));const sun=new THREE.DirectionalLight(0xffffff,.6);sun.position.set(10,20,8);scene.add(sun);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(64,64),new THREE.MeshLambertMaterial({color:0x4f7a46}));ground.rotation.x=-Math.PI/2;scene.add(ground);
+const grid=new THREE.GridHelper(64,32,0x000000,0x000000);grid.material.transparent=true;grid.material.opacity=.12;grid.position.y=.02;scene.add(grid);
+for(let i=0;i<30;i++){const x=Math.sin(i*7.3)*29,z=Math.cos(i*3.1)*29;const t=new THREE.Mesh(new THREE.ConeGeometry(1.2,3.5,7),new THREE.MeshLambertMaterial({color:0x2d5a2d}));t.position.set(x,1.7,z);scene.add(t)}
+const rangeRing=new THREE.Mesh(new THREE.RingGeometry(.97,1,48),new THREE.MeshBasicMaterial({color:0xffee66,side:2,transparent:true,opacity:.7}));rangeRing.rotation.x=-Math.PI/2;rangeRing.position.y=.05;rangeRing.visible=false;scene.add(rangeRing);
+const selRing=new THREE.Mesh(new THREE.RingGeometry(.9,1.1,32),new THREE.MeshBasicMaterial({color:0xff4444,side:2}));selRing.rotation.x=-Math.PI/2;selRing.position.y=.06;selRing.visible=false;scene.add(selRing);
+
+function mkView(p){const g=new THREE.Group(),col=p.tm==='p'?CL[p.c].col:p.col,mat=new THREE.MeshLambertMaterial({color:col});
+const b=new THREE.Mesh(new THREE.CylinderGeometry(.45,.55,1.3,12),mat);b.position.y=.65;
+const h=new THREE.Mesh(new THREE.SphereGeometry(.38,12,10),mat);h.position.y=1.6;
+const n=new THREE.Mesh(new THREE.BoxGeometry(.2,.2,.5),new THREE.MeshLambertMaterial({color:0xffffff}));n.position.set(0,1,.55);
+g.add(b,h,n);g.scale.setScalar(p.sc);g.userData.id=p.id;scene.add(g);
+const l=document.createElement('div');l.className='l';l.innerHTML=`<b style="color:${p.tm==='e'?'#f99':'#cfe'}">${p.n}</b><div class="hp"><i></i></div>`;$('labels').appendChild(l);
+return{g,mat,l,x:p.x,z:p.z,ox:0,oz:0,fl:0,tm:p.tm,sc:p.sc}}
+function onMsg(o){
+if(o.t==='s'){S=o;const ids={};o.P.forEach(p=>{ids[p.id]=1;let v=view[p.id];if(!v)v=view[p.id]=mkView(p);v.p=p;
+if(p.id===myId&&!me.init){me.x=p.x;me.z=p.z;me.init=1}});
+for(const id in view)if(!ids[id]){scene.remove(view[id].g);view[id].l.remove();delete view[id]}uiState()}
+else if(o.t==='hi'){myId=o.id}
+else if(o.t==='log'){logs.push(o.m);logs=logs.slice(-6);$('log').innerHTML=logs.join('<br>')}
+else if(o.t==='num'){const v=view[o.id];if(!v)return;const e=document.createElement('div');e.className='num';e.textContent=o.x;e.style.color=o.c;
+const p=new THREE.Vector3(v.x,2.8*v.sc,v.z).project(cam);e.style.left=(p.x+1)/2*innerWidth+'px';e.style.top=(1-p.y)/2*innerHeight+'px';document.body.appendChild(e);setTimeout(()=>e.remove(),1100);if(o.c==='#f66')v.fl=.3}
+else if(o.t==='fx')addFx(o);
+else if(o.t==='order'){$('order').hidden=false;$('order').innerHTML='<b>判定順（素早さ）</b><br>'+o.o.map((x,i)=>`${i+1}. ${x}`).join('<br>')}
+else if(o.t==='tp'){me.x=-8+Math.random()*4;me.z=6;goal=null}}
+function run(dur,upd,done){fxs.push({t:0,dur,upd,done})}
+function addFx(o){const a=view[o.a],t=view[o.t2];if(!a)return;
+if(o.k==='melee'&&t){const dx=t.x-a.x,dz=t.z-a.z,L=Math.hypot(dx,dz)||1,m=Math.min(L*.5,1.3);run(.45,p=>{const s=Math.sin(p*Math.PI)*m;a.ox=dx/L*s;a.oz=dz/L*s},()=>{a.ox=a.oz=0})}
+else if(o.k==='bolt'&&t){const m=new THREE.Mesh(new THREE.SphereGeometry(.28),new THREE.MeshBasicMaterial({color:o.c}));scene.add(m);
+run(.5,p=>m.position.set(a.x+(t.x-a.x)*p,1.5+Math.sin(p*Math.PI)*.6,a.z+(t.z-a.z)*p),()=>scene.remove(m))}
+else if(o.k==='def'){const m=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshBasicMaterial({color:o.c,transparent:true,opacity:.5}));scene.add(m);
+run(.8,p=>{m.position.set(a.x,1,a.z);m.scale.setScalar(.8+p*.7);m.material.opacity=.5*(1-p)},()=>scene.remove(m))}}
+function uiState(){if(!S)return;const b=S.B,mp=S.P.find(p=>p.id===myId);
+$('ph').textContent=b.ph==='idle'?'探索中：敵に近づくと戦闘開始':b.ph==='reserve'?`行動予約 残り${b.tm}秒（全員予約で即開始）`:`演出・判定中（次の行動を予約できます）`;
+$('bar').firstChild.style.width=b.ph==='reserve'?(b.tm/b.mx*100)+'%':b.ph==='perform'?'100%':'0';
+if(b.ph==='idle')$('order').hidden=true;
+$('me').textContent=mp&&b.ph!=='idle'?(mp.al?(mp.q?'予約中：'+mp.q:'行動を選んでください'):'戦闘不能（治癒で復活できます）'):'';
+$('party').innerHTML=S.P.filter(p=>p.tm==='p').map(p=>`<div style="color:${p.al?'#fff':'#f88'}">${p.id===myId?'▶':''}${p.n} ${p.h}/${p.m}</div>`).join('');
+document.querySelectorAll('#acts button').forEach(bt=>bt.classList.toggle('on',!!(mp&&mp.q&&mp.q.startsWith(bt.dataset.n))))}
+function buildActs(){const sk=SK[myCls],list=[['atk','攻撃'],['heavy','強攻撃'],['skill',sk.n],['guard','防御'],['dodge','回避'],['parry','受け流し'],['aid','援護']];
+$('acts').innerHTML='';list.forEach(([k,n])=>{const b=document.createElement('button');b.textContent=n;b.dataset.n=n;b.onclick=()=>act(k);$('acts').appendChild(b)})}
+function nearestEnemy(){let best=null,bd=1e9;S.P.forEach(p=>{if(p.tm==='e'&&p.al){const D=Math.hypot(p.x-me.x,p.z-me.z);if(D<bd){bd=D;best=p}}});return best}
+function act(k){if(!S)return;const mp=S.P.find(p=>p.id===myId);if(!mp||!mp.al||S.B.ph==='idle')return;
+const tg=(k==='skill'?SK[myCls]:AC[k]).tg;let t=null;
+if(tg==='e'){let s=S.P.find(p=>p.id===sel&&p.tm==='e'&&p.al)||nearestEnemy();t=s&&s.id}
+else if(tg==='a'){let s=S.P.find(p=>p.id===sel&&p.tm==='p');if(!s)s=S.P.filter(p=>p.tm==='p').sort((a,b)=>a.h/a.m-b.h/b.m)[0];t=s&&s.id}
+send({t:'act',a:k,tg:t})}
+
+/* 入力 */
+addEventListener('keydown',e=>keys[e.key.toLowerCase()]=1);addEventListener('keyup',e=>keys[e.key.toLowerCase()]=0);
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();rd.setSize(innerWidth,innerHeight)});
+const ray=new THREE.Raycaster();
+rd.domElement.addEventListener('pointerdown',e=>{ray.setFromCamera(new THREE.Vector2(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1),cam);
+const hit=ray.intersectObjects(Object.values(view).map(v=>v.g),true)[0];
+if(hit){let o=hit.object;while(o&&!o.userData.id)o=o.parent;if(o){sel=o.userData.id;return}}
+const gh=ray.intersectObject(ground)[0];if(gh)goal={x:gh.point.x,z:gh.point.z}});
+
+/* 描画ループ */
+const lk=new THREE.Vector3(),f=new THREE.Vector3();
+function frame(now){requestAnimationFrame(frame);const dt=Math.min((now-lastT)/1000||0,.1);lastT=now;
+if(S&&me.init){const mp=S.P.find(p=>p.id===myId),inB=S.B.ph!=='idle';
+cam.getWorldDirection(f);f.y=0;f.normalize();const rx=-f.z,rz=f.x;let mx=0,mz=0;
+if(keys.w||keys.arrowup){mx+=f.x;mz+=f.z}if(keys.s||keys.arrowdown){mx-=f.x;mz-=f.z}if(keys.d||keys.arrowright){mx+=rx;mz+=rz}if(keys.a||keys.arrowleft){mx-=rx;mz-=rz}
+if(mx||mz)goal=null;else if(goal){const dx=goal.x-me.x,dz=goal.z-me.z;if(Math.hypot(dx,dz)<.2)goal=null;else{mx=dx;mz=dz}}
+const L=Math.hypot(mx,mz);if(L>0&&mp&&mp.al){me.x=Math.max(-30,Math.min(30,me.x+mx/L*CFG.speed*dt));me.z=Math.max(-30,Math.min(30,me.z+mz/L*CFG.speed*dt));me.ry=Math.atan2(mx,mz)}
+posAcc+=dt;if(posAcc>.1){posAcc=0;send({t:'pos',x:me.x,z:me.z,ry:me.ry})}
+for(const id in view){const v=view[id],p=v.p,isMe=id===myId;const tx=isMe?me.x:p.x,tz=isMe?me.z:p.z,k=Math.min(1,dt*12);v.x+=(tx-v.x)*k;v.z+=(tz-v.z)*k;
+v.g.position.set(v.x+v.ox,0,v.z+v.oz);if(!isMe||L>0)v.g.rotation.y=isMe?me.ry:p.ry;
+v.g.scale.y=p.al?v.sc:.25*v.sc;v.fl-=dt;v.mat.emissive.setHex(v.fl>0?0xaa0000:0);
+const sp=new THREE.Vector3(v.x,(p.al?2.6:.8)*v.sc,v.z).project(cam);v.l.style.display=sp.z<1?'block':'none';v.l.style.left=(sp.x+1)/2*innerWidth+'px';v.l.style.top=(1-sp.y)/2*innerHeight+'px';
+v.l.querySelector('i').style.width=p.h/p.m*100+'%'}
+const mv=view[myId];let foc=S.P.find(p=>p.id===sel&&p.al)||nearestEnemy();const sv=view[sel];
+selRing.visible=!!(sv&&sv.p.al);if(sv)selRing.position.x=sv.x,selRing.position.z=sv.z,selRing.scale.setScalar(sv.sc);
+rangeRing.visible=inB&&mp&&mp.al;rangeRing.position.set(me.x,.05,me.z);rangeRing.scale.setScalar(CL[myCls].rng);
+let goalP,look;
+if(!inB||!foc){goalP=new THREE.Vector3(me.x,26,me.z+13);look=new THREE.Vector3(me.x,0,me.z)}
+else{const dx=foc.x-me.x,dz=foc.z-me.z,Ld=Math.hypot(dx,dz)||1;goalP=new THREE.Vector3(me.x-dx/Ld*9,6,me.z-dz/Ld*9);look=new THREE.Vector3(me.x+dx/Ld*5,1.5,me.z+dz/Ld*5)}
+const kk=1-Math.exp(-3*dt);cam.position.lerp(goalP,kk);lk.lerp(look,kk);cam.lookAt(lk)}
+fxs=fxs.filter(x=>{x.t+=dt;const p=Math.min(1,x.t/x.dur);x.upd(p);if(p>=1){x.done();return false}return true});
+rd.render(scene,cam)}
+
+/* 開始処理 */
+function begin(code){const nm=$('nm').value||'冒険者';$('menu').hidden=true;$('hud').hidden=false;$('room').textContent=code?`部屋コード：${code}`:'ひとりプレイ';buildActs();
+if(isHost){mkP('H',nm,myCls);initWorld();myId='H';let last=performance.now();setInterval(()=>{const n=performance.now();tick(Math.min((n-last)/1000,.2));last=n},50)}
+else send({t:'join',name:nm,cls:myCls});
+cam.position.set(-8,26,19);lk.set(-8,0,6);requestAnimationFrame(frame)}
+function needPeer(){if(typeof Peer==='undefined'){alert('PeerJSが読み込めません。ネット接続を確認してください。');return 1}}
+Object.entries(CL).forEach(([k,c])=>{const b=document.createElement('button');b.textContent=c.n;b.onclick=()=>{myCls=k;[...$('cls').children].forEach(x=>x.classList.toggle('on',x===b))};if(k===myCls)b.className='on';$('cls').appendChild(b)});
+$('b1').onclick=()=>{isHost=true;begin('')};
+$('b2').onclick=()=>{if(needPeer())return;isHost=true;const code=Math.random().toString(36).slice(2,6).toUpperCase();peer=new Peer('trpgproto-'+code);
+peer.on('open',()=>begin(code));
+peer.on('connection',c=>{conns[c.peer]=c;c.on('data',m=>hostRecv(c.peer,m,c));c.on('close',()=>{const a=A[c.peer];delete conns[c.peer];delete A[c.peer];if(a)log(`${a.name}が退出した`)})});
+peer.on('error',e=>alert('接続エラー：'+e.type))};
+$('b3').onclick=()=>{if(needPeer())return;const code=$('code').value.trim().toUpperCase();if(!code)return alert('部屋コードを入力してください');
+peer=new Peer();peer.on('open',()=>{conn=peer.connect('trpgproto-'+code,{reliable:true});
+conn.on('open',()=>begin(code));conn.on('data',onMsg);conn.on('close',()=>alert('ホストとの接続が切れました'))});
+peer.on('error',e=>alert('接続エラー：'+e.type+'（コードを確認してください）'))};
+</script></body></html>
