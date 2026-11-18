@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>TRPG協力バトル 試作 第3弾b</title>
+<title>TRPG協力バトル 試作 第4弾</title>
 <style>
 *{box-sizing:border-box;margin:0}
 [hidden]{display:none!important}
@@ -90,8 +90,8 @@ input{-webkit-user-select:text;user-select:text}
 <svg width="0" height="0"><filter id="warp"><feTurbulence type="fractalNoise" baseFrequency=".05" numOctaves="2" seed="3"/><feDisplacementMap in="SourceGraphic" scale="14"/></filter></svg>
 <div id="menu">
 <h1>TRPG協力バトル 試作（第3弾）</h1>
-<small>まず能力値を決めます。各項目の「振る」を押すと、6面ダイス3つを振って合計が能力値になります（振り直しなし）。</small>
-<input id="nm" placeholder="名前" maxlength="8" value="冒険者">
+<small>チームコードが同じ人は味方、違う人は戦闘の対象（PvP）になります。まず能力値を決めます。各項目の「振る」を押すと、6面ダイス3つを振って合計が能力値になります（振り直しなし）。</small>
+<input id="nm" placeholder="名前" maxlength="8" value="冒険者"> <input id="tc" placeholder="チームコード（同じ＝味方／空欄＝ソロ）" maxlength="8" style="width:200px">
 <div id="stats" style="width:100%;max-width:360px"></div>
 <button id="rall">残りを全部振る</button>
 <div id="der" style="color:#fd8"></div><div id="gift" hidden style="max-width:380px"></div>
@@ -120,7 +120,7 @@ input{-webkit-user-select:text;user-select:text}
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 /* ===== 設定（すべて仮の値） ===== */
-const CFG={reserve:20,min:1.5,defend:3,speed:5,aggro:10,flee:25,loot:14,dropRate:.1,hngTick:600,spotR:2.5,spotFirst:30};
+const CFG={see:24,reserve:20,min:1.5,defend:3,speed:5,aggro:10,flee:25,loot:14,dropRate:.1,hngTick:600,spotR:2.5,spotFirst:30};
 const $=id=>document.getElementById(id);
 const d=n=>1+Math.floor(Math.random()*n),rollA=(n,s)=>Array.from({length:n},()=>d(s)),sumA=a=>a.reduce((x,y)=>x+y,0);
 const dbOf=t=>t<=7?{f:-2}:t<=14?{f:-1}:t<=21?{f:0}:t<=28?{n:1,s:4}:{n:1,s:6};
@@ -194,11 +194,15 @@ const sName=s=>(s.x&&s.x.nm?s.x.nm:IT[s.k].n)+(s.x&&s.x.e===2?'【傑作】':s.x
 const sTxt=s=>{if(s.k==='quest')return `${EN[s.x.kind].n}を倒すと成功済依頼書になる（報酬${s.x.reward}Q）`;if(s.k==='done')return `質屋で${s.x.ip}Qで売れる`;if(s.k==='card')return `トレーディングカード IP${s.x.ip}`;return itTxt(s.k)+(s.x&&s.x.bd?` 永続+${s.x.bd[0]}D${s.x.bd[1]}`:'')};
 
 /* ===== ホスト側ロジック ===== */
-let isHost=false,myId=null,conns={},peer=null,conn=null,A={},B={ph:'idle',tm:0,rd:0,eng:[],el:0,dw:null},sched=[],clock=0,snapAcc=0,ENT=[],LOOT=[],uid=1,SPOT=null,spotAt=CFG.spotFirst,hngT=0;
+let isHost=false,myId=null,conns={},peer=null,conn=null,A={},GB={id:'',ph:'idle',tm:0,rd:0,eng:[],el:0,dw:null,att:0,hit:0,oor:0,stale:0,abort:0,ENT:[],mem:[]},B=GB,BT=[],sched=[],clock=0,snapAcc=0,ENT=[],LOOT=[],uid=1,SPOT=null,spotAt=CFG.spotFirst,hngT=0;
 let PAWN={},PT=0,CAVE={kills:0,opened:0},MTN={on:0,kills:0,free:0,cool:0,dm:0},SP=[];
-const dist=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z),foes=a=>Object.values(A).filter(o=>o.team!==a.team&&o.alive),near=a=>(x,y)=>dist(a,x)-dist(a,y);
-const at=(t,fn)=>sched.push({t:clock+t,fn});
-function ev(o){onMsg(o);Object.values(conns).forEach(c=>c.open&&c.send(o))}
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z),near=a=>(x,y)=>dist(a,x)-dist(a,y);
+const bOf=a=>BT.find(b=>b.mem.includes(a.id))||null,ally=(a,b)=>a.team===b.team&&(a.team==='e'||a.tc===b.tc),hostile=(a,b)=>!ally(a,b),inB=o=>o.team==='p'?B.mem.includes(o.id):B.eng.includes(o.g),foes=a=>Object.values(A).filter(o=>o.alive&&hostile(a,o)&&inB(o));
+const at=(t,fn)=>{const bt=B;sched.push({t:clock+t,fn:()=>{if(bt.dead)return;const pB=B;B=bt;try{fn()}finally{B=pB}}})};
+const atG=(t,fn)=>sched.push({t:clock+t,fn:()=>{const pB=B;B=GB;try{fn()}finally{B=pB}}});
+const FILT=new Set(['log','roll','dshow','dend','order','num','fx','brk']);
+const inBid=(id,b)=>{const p=A[id],bt=p&&bOf(p);return (bt?bt.id:'')===b};
+function ev(o){if(o.b===undefined)o.b=B.id;const f=o.b&&FILT.has(o.t);if(!f||(myId&&inBid(myId,o.b)))onMsg(o);Object.entries(conns).forEach(([cid,c])=>{if(c.open&&(!f||inBid(cid,o.b)))c.send(o)})}
 const log=m=>ev({t:'log',m}),num=(T,x,c,h)=>ev({t:'num',id:T.id,x,c,h});
 const wpn=a=>a.inv.find(i=>i.id===a.eq.w),shd=a=>a.inv.find(i=>i.id===a.eq.s),hasStaff=a=>{const w=wpn(a);return !!w&&w.k==='staff'};
 const isAtk=q=>q&&(q.a==='atk'||(SKL[q.a]&&SKL[q.a].atk));
@@ -206,8 +210,8 @@ const qn=(a,q)=>(q.a==='atk'?'攻撃':q.a==='wait'?'待機':q.a==='use'?'道具'
 function randItem(mx,pf){const ks=Object.keys(IT).filter(k=>'wsc'.includes(IT[k].t)&&!IT[k].cur&&ipOf(k)<=(mx||1e9)&&(!pf||pf(k))),w=ks.map(k=>1/Math.pow(ipOf(k),1.3));let r=Math.random()*sumA(w);for(let i=0;i<ks.length;i++){r-=w[i];if(r<=0)return ks[i]}return ks[0]}
 const drop=(k,x,z)=>LOOT.push({id:'l'+uid++,k,x,z});
 function addItem(a,k,x){const it=IT[k];if(it.t==='c'&&!x){const s=a.inv.find(y=>y.k===k&&y.n<16);if(s){s.n++;return s}}if(a.inv.length>=20)return null;const s={id:'i'+uid++,k,n:1};if(x)s.x=x;a.inv.push(s);if(a.seen&&(it.t==='w'||it.t==='s'))a.seen[k]=1;return s}
-function mkP(id,name,cls,s){const n=Object.values(A).filter(a=>a.team==='p').length,hp=(s.con+s.siz)*2,mp=(s.pow+s.int)*2;
-A[id]={id,team:'p',name,cls,st:s,x:-3+n*1.8,z:3,ry:0,hp,mhp:hp,mp,mmp:mp,san:s.pow*3,msan:s.pow*3,hng:100,mov:0,spd:s.spd,str:s.str,db:dbOf(s.str+s.siz),alive:1,q:null,inv:[],eq:{w:null,s:null,a:null},armor:0,armorLeft:0,noAtk:0,dodges:0,
+function mkP(id,name,cls,s,tc){const n=Object.values(A).filter(a=>a.team==='p').length,hp=(s.con+s.siz)*2,mp=(s.pow+s.int)*2;
+A[id]={id,team:'p',tc:((tc||'')+'').trim().slice(0,8)||id,name,cls,st:s,x:-3+n*1.8,z:3,ry:0,hp,mhp:hp,mp,mmp:mp,san:s.pow*3,msan:s.pow*3,hng:100,mov:0,spd:s.spd,str:s.str,db:dbOf(s.str+s.siz),alive:1,q:null,inv:[],eq:{w:null,s:null,a:null},armor:0,armorLeft:0,noAtk:0,dodges:0,
 ms:{ma:0,slash:0,blunt:0,snipe:0,heal:0,atk:0},use:{},hp0n:0,mp0n:0,dist:0,lx:null,lz:null,ndr:0,ndn:0,surg:null,seen:{},vis:{town:1},cards:{},cloak:0,locker:null,nt:0,autoDodge:0};Object.defineProperty(A[id],'gold',{get(){return goldOf(this)},set(v){setGold(this,v)},enumerable:false});A[id].gold=300}
 function spawnE(k,x,z,g,zone,o){o=o||{};const e=EN[k],id='e'+uid++;A[id]={id,team:'e',name:o.name||e.n,cls:k,x,z,ry:0,hp:o.hp||e.hp,mhp:o.hp||e.hp,dm:o.dm||e.dm,spd:o.spd||e.spd,rng:o.rng||e.rng,mv:o.mv||e.mv,sc:o.sc||e.sc,col:o.col||e.col,san:o.san||e.san,alive:1,q:null,g,zone,nf:o.nf||0,armor:0,armorLeft:0,dodges:0,ndr:0,ndn:0};const e2=A[id];if(!o.nf&&Math.random()<.12){const ks=Object.keys(IT).filter(q=>IT[q].t==='w'&&q!=='staff'),w=ks.map(q=>1/Math.pow(ipOf(q),1.3));let r=Math.random()*sumA(w),pk=ks[0];for(let i=0;i<ks.length;i++){r-=w[i];if(r<=0){pk=ks[i];break}}e2.wp=pk;e2.name+=IT[pk].ic;if(IT[pk].g==='狙撃')e2.rng=Math.max(e2.rng,IT[pk].r)}return e2}
 function spawnGroup(s){s.u.forEach((k,i)=>spawnE(k,s.x+(i%2)*3,s.z+i*3,s.g,s.zone))}
@@ -221,7 +225,7 @@ LOOT=[];drop('knife',-4,9);drop('pot',-11,9);for(let i=0;i<CFG.loot;i++){let x,z
 PAWN={town:newPawn('town'),port:newPawn('port')};PT=0}
 const worldSnap=()=>({pw:{town:PAWN.town,port:PAWN.port},m:{on:MTN.on,free:MTN.free,k:MTN.kills}});
 const pX=a=>a.team==='p'?{gd:a.gold,lk:a.locker,vis:Object.keys(a.vis),cl:a.cloak?1:0,cc:Object.keys(a.cards).length,seen:Object.keys(a.seen),nt:a.nt||0}:{};
-function giveQ(p,v){const L=p&&p.team==='p'?[p]:Object.values(A).filter(x=>x.team==='p'&&x.alive);L.forEach(x=>{x.gold+=v;ev({t:'grow',id:x.id,m:`+${v}Q`})})}
+function giveQ(p,v){const L=p&&p.team==='p'?[p]:Object.values(A).filter(x=>x.team==='p'&&x.alive&&(B===GB||B.mem.includes(x.id)));L.forEach(x=>{x.gold+=v;ev({t:'grow',id:x.id,m:`+${v}Q`})})}
 function unequip(a,id){['w','s','a'].forEach(s=>{if(a.eq[s]===id)a.eq[s]=null})}
 function questDone(p,T){const s=p.inv.find(x=>x.k==='quest'&&x.x.kind===T.cls);if(!s)return;const mult=Math.random()<.03?2+Math.floor(Math.random()*9):1;s.k='done';s.x={nm:'成功済依頼書',kind:s.x.kind,ip:s.x.reward*mult};log(`📜 ${p.name}の依頼達成！ 成功済依頼書（IP${s.x.ip}${mult>1?'・大当たり×'+mult:''}）`)}
 function spawnMtnBoss(){const m=LM.find(l=>l.id==='mtn'),k=MTN.kills;spawnE('brute',m.x+6,m.z-2,1000+k,'mtn',{name:'山の主'+(k+1),hp:50+k*14,dm:[2+Math.floor(k/4),6,2+Math.floor(k/3)],spd:5+k%3,nf:1});log(`⛰ 山の主${k+1}が現れた！`)}
@@ -258,14 +262,42 @@ function enchOp(a,op,arg,say){const s=a.inv.find(x=>x.id===arg);if(!s||IT[s.k].t
   const c=sIP(s)*50;if(a.gold<c)return say('Qが足りない');a.gold-=c;unequip(a,mate.id);a.inv=a.inv.filter(x=>x!==mate);ev({t:'brk',ic:IT[mate.k].ic,nm:sName(mate)+'（素材）'});
   s.x=s.x||{};s.x.e=1;const r=d(20),ok=r<a.st.int;if(ok)addBd(s);rollEv('エンチャントの出来（知性未満で永続ボーナス）',[{s:20,v:r}],r,`${r} ${ok?'<':'≥'} 知性${a.st.int}${ok?'：永続ダメージボーナス+1ダイス':''}`,ok?'ok':'ng',a.id);say(`${sName(s)}が完成（IP${sIP(s)}）`)}
  else{if(e!==1)return say('加護つきの武器が必要');const c=sIP(s)*50;if(a.gold<c)return say('Qが足りない');a.gold-=c;s.x.e=2;addBd(s);say(`傑作武器が完成！ 永続ボーナス+1ダイス（IP${sIP(s)}）`)}}
-function suspendBattle(P){growStats(P,0);if(B.ph==='perform'){B.abort=1;ENT=[]}B.eng=[];B.ph='idle';B.dw=null;B.oor=0;B.stale=0;log('🕊 攻撃が届かないまま30秒が経ち、戦闘が中断された')}
-function respawnTown(T){if(T.alive)return;T.alive=1;T.hp=Math.ceil(T.mhp*.5);T.q=null;T.armor=0;T.surg=null;T.ndr=0;T.ndn=0;T.gone=1;const x=-4+Math.random()*8,z=4+Math.random()*3;T.x=x;T.z=z;T.lx=null;ev({t:'tp',id:T.id,x,z});log(`🏠 ${T.name}は中央街で目を覚ました（HP半分）`)}
-function endMountain(){MTN={on:0,kills:0,free:0,cool:1,dm:0};Object.values(A).filter(e=>e.team==='e'&&e.zone==='mtn').forEach(e=>delete A[e.id]);B.eng=B.eng.filter(g=>g<1000||g>=1200);
-if(!B.eng.length&&B.ph!=='idle'){if(B.ph==='perform'){B.abort=1;ENT=[]}B.ph='idle';B.dw=null;B.oor=0;B.stale=0}log('⛰ 山での挑戦は終わった…')}
+function removeBattle(bt){bt.dead=true;BT=BT.filter(b=>b!==bt);bt.mem.forEach(id=>{const p=A[id];if(p)p.q=null})}
+function suspendBattle(bt){const pB=B;B=bt;growStats(bt.mem.map(id=>A[id]).filter(Boolean),0);log('🕊 攻撃が届かないまま30秒が経ち、戦闘が中断された');B=pB;removeBattle(bt)}
+function respawnTown(T){if(T.alive)return;const bt=bOf(T);if(bt)bt.mem=bt.mem.filter(id=>id!==T.id);T.alive=1;T.hp=Math.ceil(T.mhp*.5);T.q=null;T.armor=0;T.surg=null;T.ndr=0;T.ndn=0;T.gone=1;const x=-4+Math.random()*8,z=4+Math.random()*3;T.x=x;T.z=z;T.lx=null;ev({t:'tp',id:T.id,x,z});log(`🏠 ${T.name}は中央街で目を覚ました（HP半分）`);
+ if(bt&&!bt.dead){const pB=B;B=bt;evalBattle(bt);B=pB}}
+function endMountain(){MTN={on:0,kills:0,free:0,cool:1,dm:0};Object.values(A).filter(e=>e.team==='e'&&e.zone==='mtn').forEach(e=>delete A[e.id]);BT.slice().forEach(bt=>{bt.eng=bt.eng.filter(g=>g<1000||g>=1200);const pB=B;B=bt;evalBattle(bt);B=pB});log('⛰ 山での挑戦は終わった…')}
+/* 戦闘の終了判定。戦闘が終わったらtrueを返す（呼び出し時 B===bt） */
+function evalBattle(bt){if(bt.dead)return true;bt.mem=bt.mem.filter(id=>A[id]);const mem=bt.mem.map(id=>A[id]);
+ const En=Object.values(A).filter(e=>e.team==='e'&&e.alive&&bt.eng.includes(e.g)),nf=En.some(e=>e.nf);
+ if(!nf)for(const p of mem.slice()){if(!p.alive)continue;const hs=En.concat(mem.filter(q=>q.alive&&q!==p&&hostile(p,q)));if(hs.length&&hs.every(h=>dist(h,p)>CFG.flee)){bt.mem=bt.mem.filter(id=>id!==p.id);p.q=null;growStats([p],0);log(`🏃 ${p.name}は戦闘から離脱した`)}}
+ const pl=bt.mem.map(id=>A[id]).filter(p=>p.alive),sides=new Set(pl.map(p=>p.tc)).size+(En.length?1:0);
+ if(sides>=2)return false;endBattle(bt);return true}
+function endBattle(bt){const mem=bt.mem.map(id=>A[id]).filter(Boolean),En=Object.values(A).filter(e=>e.team==='e'&&bt.eng.includes(e.g)),enAlive=En.some(e=>e.alive),pl=mem.filter(p=>p.alive),tcs=[...new Set(pl.map(p=>p.tc))];
+ const winTc=!enAlive&&tcs.length===1?tcs[0]:null,W=[],Lz=[];mem.forEach(p=>{if(winTc!==null&&p.tc===winTc)W.push(p);else Lz.push(p)});
+ if(W.length){grow(W);growStats(W,0);W.forEach(p=>{if(!p.alive){p.alive=1;p.hp=Math.ceil(p.mhp*.4)}else p.hp=Math.min(p.mhp,p.hp+Math.ceil(p.mhp*.25));p.armor=0;p.ndr=0;p.ndn=0;p.surg=null});log(Object.values(A).some(e=>e.team==='e'&&e.alive)?'🏆 戦闘に勝利！':'🎉 全ての敵を倒した！クリア！')}
+ if(Lz.length){log('☠ 全滅… 中央街に戻される');growStats(Lz,1);Lz.forEach(p=>{p.hp=p.mhp;p.mp=p.mmp;p.alive=1;p.q=null;p.armor=0;p.use={};p.surg=null;p.ndr=0;p.ndn=0;p.san=Math.max(p.san,1);const x=-3+Math.random()*6,z=3;p.x=x;p.z=z;p.lx=null;ev({t:'tp',id:p.id,x,z})})}
+ const hadM=En.some(e=>e.zone==='mtn');
+ if(enAlive){En.forEach(e=>delete A[e.id]);bt.eng.forEach(g=>{const sp=SP.find(q=>q.g===g);if(sp)spawnGroup(sp)})}
+ removeBattle(bt);if(enAlive&&hadM)endMountain()}
+const engaged=g=>BT.some(b=>b.eng.includes(g));
+function joinB(p,bt,quiet){bt.mem.push(p.id);p.q=null;p.hng=Math.max(0,p.hng-(inWater(p.x,p.z)?10:5));if(!quiet){const pB=B;B=bt;log(`⚔ ${p.name}が戦闘に加わった`);B=pB}}
+function startBattle(mem,eng){const bt={id:'b'+uid++,ph:'reserve',tm:CFG.reserve,rd:0,eng:eng.slice(),el:0,dw:null,att:0,hit:0,oor:0,stale:0,abort:0,ENT:[],mem:[]};BT.push(bt);mem.forEach(p=>joinB(p,bt,1));const pB=B;B=bt;log('⚔ 戦闘開始！ 行動を予約しよう（HNG-5。水上は-10）');B=pB;return bt}
+function manageBattles(P,E){for(const p of P){if(!p.alive||inSafe(p.x,p.z))continue;const mb=bOf(p);
+ if(mb){for(const e of E)if(e.alive&&!engaged(e.g)&&dist(p,e)<CFG.aggro)mb.eng.push(e.g);continue}
+ let jb=null;for(const bt of BT){if(bt.eng.some(g=>E.some(e=>e.g===g&&e.alive&&dist(p,e)<CFG.aggro))||bt.mem.some(id=>{const q=A[id];return q&&q.alive&&hostile(p,q)&&!inSafe(q.x,q.z)&&dist(p,q)<CFG.aggro})){jb=bt;break}}
+ if(jb){joinB(p,jb);continue}
+ const e=E.find(e=>e.alive&&!engaged(e.g)&&dist(p,e)<CFG.aggro),q=P.find(q=>q!==p&&q.alive&&!inSafe(q.x,q.z)&&!bOf(q)&&hostile(p,q)&&dist(p,q)<CFG.aggro);
+ if(e||q)startBattle([p].concat(q?[q]:[]),e?[e.g]:[])}}
+function battleTick(dt,P){const bt=B;
+ if(bt.dw){bt.dw.tm-=dt;if(bt.dw.tm<=0){const w=bt.dw;bt.dw=null;w.cb('none')}}
+ if(bt.dead)return;
+ if(bt.oor&&(bt.ph==='reserve'||bt.ph==='perform')){bt.stale+=dt;if(bt.stale>=30){suspendBattle(bt);return}}
+ if(bt.ph==='reserve'){bt.tm-=dt;bt.el+=dt;if(evalBattle(bt))return;const al=P.filter(p=>p.alive&&bt.mem.includes(p.id));if(bt.tm<=0||(bt.el>=CFG.min&&al.length&&al.every(p=>p.q||p.san<=0)))beginRound()}}
 function spotPos(){for(let i=0;i<60;i++){const x=(Math.random()*2-1)*135,z=(Math.random()*2-1)*135;if(!LM.some(l=>Math.hypot(x-l.x,z-l.z)<l.r+8)&&!inWater(x,z))return[x,z]}return[40,40]}
 function worldTick(dt,P){P.forEach(p=>LM.forEach(l=>{if(!p.vis[l.id]&&Math.hypot(p.x-l.x,p.z-l.z)<l.r){p.vis[l.id]=1;ev({t:'grow',id:p.id,m:`${l.n}に到着（次元の鏡で戻れる）`})}}));
 PT+=dt;if(PT>=1800){PT=0;PAWN={town:newPawn('town'),port:newPawn('port')};log('質屋の品ぞろえと依頼が入れ替わった')}
-if(B.ph==='idle')for(const s of SP){const E_=Object.values(A).filter(e=>e.team==='e'&&e.g===s.g);if(E_.some(e=>e.alive))s.t=0;else if((s.t+=dt)>90){s.t=0;E_.forEach(e=>delete A[e.id]);spawnGroup(s)}}
+for(const s of SP){if(BT.some(b=>b.eng.includes(s.g)))continue;const E_=Object.values(A).filter(e=>e.team==='e'&&e.g===s.g);if(E_.some(e=>e.alive))s.t=0;else if((s.t+=dt)>90){s.t=0;E_.forEach(e=>delete A[e.id]);spawnGroup(s)}}
 const m=LM.find(l=>l.id==='mtn'),inM=P.some(p=>p.alive&&Math.hypot(p.x-m.x,p.z-m.z)<m.r-2);
 if(MTN.cool&&!inM)MTN.cool=0;if(MTN.on&&!P.some(p=>Math.hypot(p.x-m.x,p.z-m.z)<m.r+2))endMountain();
 if(!MTN.on&&!MTN.cool&&inM){MTN.on=1;MTN.kills=0;MTN.free=0;MTN.dm=0;log('⛰ 人亡き山に入った…ここからは逃げられない！');spawnMtnBoss()}}
@@ -273,16 +305,16 @@ function aiPick(a){const f=foes(a);if(!f.length)return null;if(Math.random()>.88
 const inR=f.filter(p=>dist(a,p)<=a.rng+.3),pool=inR.length?inR:[f[0]];return{a:'atk',t:pool[Math.floor(Math.random()*pool.length)].id}}
 function sanHit(p,v,why){p.san=Math.max(0,p.san-v);ev({t:'roll',w:`${p.name}のSAN減少（${why}）`,d:[{s:20,v}],tot:v,x:`SAN -${v}`,res:null,o:p.id});num(p,'SAN-'+v,'#c6f');if(p.san<=0)log(`${p.name}は正気を失い、動けない！`)}
 function pay(a,c){const was=a.mp;if(c<=a.mp)a.mp-=c;else{a.hp-=c-a.mp;a.mp=0;if(a.hp<=0&&a.alive)kill(a)}if(was>0&&a.mp<=0&&a.team==='p'&&B.ph!=='idle')a.mp0n++}
-function kill(T){T.hp=0;T.alive=0;T.q=null;log(`💀 ${T.name}が倒れた`);if(T.team==='p'&&MTN.on){const m=LM.find(l=>l.id==='mtn');if(Math.hypot(T.x-m.x,T.z-m.z)<m.r)at(1.5,()=>respawnTown(T))}
+function kill(T){T.hp=0;T.alive=0;T.q=null;log(`💀 ${T.name}が倒れた`);if(T.team==='p'&&MTN.on){const m=LM.find(l=>l.id==='mtn');if(Math.hypot(T.x-m.x,T.z-m.z)<m.r)atG(1.5,()=>respawnTown(T))}
 if(T.team==='e'){if(Math.random()<CFG.dropRate)drop(randItem(),T.x,T.z);const lh=A[T.lh],z=T.zone,ch=(n,c)=>LOOT.push({id:'l'+uid++,k:'chest',x:T.x,z:T.z,n,ch:c});
  if(lh&&lh.team==='p')questDone(lh,T);if(T.wp&&Math.random()<.35)drop(T.wp,T.x,T.z);if(Math.random()<.08)giveQ(lh,d(20));
  if(z==='forest'&&Math.random()<.12){ch(1);log('📦 宝箱が落ちた！')}
  if(z==='cave'&&T.cls!=='dkingl'){if(Math.random()<.7)giveQ(lh,5+d(26));if(++CAVE.kills%6===0){ch(3,'cave');log('📦 宝箱が現れた！')}}
  if(T.cls==='dkingl'){giveQ(null,500);ch(3);log('🎉 洞窟の主を倒した！')}
  if(z==='mtn'){ch(2,'mtn');
-  if(T.cls==='brute'){MTN.kills++;if(MTN.kills<15)at(3,spawnMtnBoss);else{MTN.free=1;log('⛰ 無料の宿屋が現れた。休むと龍人が現れる（2分後にも現れる）');at(120,()=>{if(MTN.on&&!MTN.dm){MTN.dm=1;spawnDman()}})}}
+  if(T.cls==='brute'){MTN.kills++;if(MTN.kills<15)atG(3,spawnMtnBoss);else{MTN.free=1;log('⛰ 無料の宿屋が現れた。休むと龍人が現れる（2分後にも現れる）');atG(120,()=>{if(MTN.on&&!MTN.dm){MTN.dm=1;spawnDman()}})}}
   else if(T.cls==='dman'){giveQ(null,5000);if(!(lh&&lh.team==='p'&&addItem(lh,'wing')))drop('wing',T.x,T.z);MTN.on=0;MTN.free=0;MTN.cool=1;MTN.kills=0;MTN.dm=0;log('🐉 龍人を倒した！山から出られる。龍の翼を手に入れた！')}}}
-else if(T.team==='p'&&B.ph!=='idle'){T.hp0n++;Object.values(A).filter(p=>p.team==='p'&&p.alive&&p!==T).forEach(p=>sanHit(p,d(20),'仲間が倒れた'))}}
+else if(T.team==='p'&&B.ph!=='idle'){T.hp0n++;Object.values(A).filter(p=>p.team==='p'&&p.alive&&p!==T&&ally(T,p)&&inB(p)).forEach(p=>sanHit(p,d(20),'仲間が倒れた'))}}
 function brk(T,sl){const id=T.eq[sl],it=T.inv.find(i=>i.id===id);if(!it)return;if(it.x&&it.x.e===2){log(`✨ ${T.name}の${sName(it)}は壊れない（傑作）`);return}T.inv=T.inv.filter(i=>i.id!==id);T.eq[sl]=null;log(`💥 ${T.name}の${sName(it)}が壊れた！`);ev({t:'brk',ic:IT[it.k].ic,nm:sName(it)})}
 const fail=(a,m,done)=>{log(m);num(a,'失敗','#aaa');at(.8,done)};
 const fxOf=(a,T,rng,c)=>ev({t:'fx',k:rng<=5?'melee':'bolt',a:a.id,t2:T&&T.id,c});
@@ -296,7 +328,7 @@ const rollEv=(w,dice,tot,x,res,o)=>ev({t:'roll',w,d:dice,tot,x,res,o});
 /* 1回の命中処理：ダメージ確定→数字表示→（防御選択）→判定→数字が飛ぶ→反映 */
 function hitOne(a,T,sk,nm,dice,tot,op,done){const san=sk&&sk.san,after=san?tot:Math.max(0,tot-(T.armor||0)),id='d'+uid++;
 at(.1,()=>rollEv(`${a.name}の${nm}`,dice,tot,`${san?'SAN減少':'ダメージ'} ${tot}${!san&&T.armor?`（アーマー${T.armor}で${after}）`:''}`,null));
-at(.9,()=>ev({t:'dshow',id,v:tot,sd:a.team,t2:T.id}));
+at(.9,()=>ev({t:'dshow',id,v:tot,sd:a.team,aid:a.id,t2:T.id}));
 const stage2=def=>{
  if(!T.alive){ev({t:'dend',id,t2:T.id,hit:0,v:0});return done()}
  if(def==='parry'&&sk&&sk.mg)def='none';if(def==='guard'&&!(T.team==='p'&&shd(T)))def='none';
@@ -335,7 +367,7 @@ else{const dd=sk?sk.d:(w?IT[w.k].d:[1,2]);rollA(dd[0],dd[1]).forEach(v=>dice.pus
  if(w&&!sk){const m=a.ms[gk];if(m>=10)rollA(Math.floor(m/10),4).forEach(v=>dice.push({s:4,v}))}
  if(w&&!sk&&w.x&&w.x.bd)rollA(w.x.bd[0],w.x.bd[1]).forEach(v=>dice.push({s:w.x.bd[1],v}));if(a.cls==='healer'&&!sk)dice.push({s:4,v:d(4),neg:1})}
 let tot=dice.reduce((s,x)=>s+(x.neg?-x.v:x.v),0)+flat;if(a.team==='p'&&(!sk||sk.phy))tot=Math.max(1,tot);return{dice,tot}}
-function landslide(e,a,sk,done){const L=Object.values(A).filter(o=>o.alive&&o!==a&&dist(a,o)<=sk.r+.3&&(!sk.eo||o.team!==a.team)).sort((x,y)=>y.spd-x.spd);
+function landslide(e,a,sk,done){const L=Object.values(A).filter(o=>o.alive&&o!==a&&dist(a,o)<=sk.r+.3&&(!sk.eo||hostile(a,o))&&inB(o)).sort((x,y)=>y.spd-x.spd);
 B.att++;if(!L.length)return fail(a,`${a.name}の${sk.n}：対象がいない`,done);B.hit++;
 ev({t:'fx',k:'def',a:a.id,c:sk.wing?0xff8844:0x996633});if(a.use)a.use.atk=(a.use.atk||0)+1;let sum=0,i=0;
 const nx=()=>{if(i>=L.length){if(!sk.wing)pay(a,sum);else{a.autoDodge=1;a.nt=1}log(`${sk.n}：合計${sum}ダメージ${sk.wing?'（次の防御は回避が必ず成功）':'→ MP'+sum+'消費'}`);return at(.3,done)}
@@ -343,7 +375,7 @@ const nx=()=>{if(i>=L.length){if(!sk.wing)pay(a,sum);else{a.autoDodge=1;a.nt=1}l
 function attack(e,done){const a=e.a,q=e.q,sk=SKL[q.a],w=a.team==='p'?wpn(a):null,nm=sk?sk.n:'攻撃';
 if(sk){const r=skOk(a,a.cls,q.a);if(r)return fail(a,`${a.name}：${nm}を使えない（${r}）`,done)}
 if(sk&&sk.multi)return landslide(e,a,sk,done);
-let T=A[q.t];if(!T||!T.alive){T=foes(a).sort(near(a))[0];if(!T)return done()}
+let T=A[q.t];if(!T||!T.alive||!hostile(a,T)||!inB(T)){T=foes(a).sort(near(a))[0];if(!T)return done()}
 const rng=sk?sk.r:(a.team==='p'?(w?IT[w.k].r:3):a.rng),D=dist(a,T);
 fxOf(a,T,rng,a.team==='p'?(sk&&sk.mg?0xff6622:CL[a.cls].col):0xff4444);
 B.att++;if(D>rng+.3)return fail(a,`${a.name}の${nm}は射程外！（${D.toFixed(1)}m > ${rng}m）`,done);B.hit++;
@@ -358,7 +390,7 @@ if(!op.pre)op.pre=dmg=>({dmg,grabbed:0});
 hitOne(a,T,sk,nm,dice,tot,op,done)}
 function support(e,done){const a=e.a,q=e.q,sk=SKL[q.a];if(!sk)return done();
 const r=skOk(a,a.cls,q.a);if(r)return fail(a,`${a.name}：${sk.n}を使えない（${r}）`,done);
-let T=A[q.t];if(!T||(!T.alive&&q.a!=='surgery'))T=Object.values(A).filter(o=>o.team==='p'&&o.alive).sort(near(a))[0]||a;
+let T=A[q.t];if(!T||hostile(a,T)||(!T.alive&&q.a!=='surgery'))T=Object.values(A).filter(o=>o.team==='p'&&o.alive&&ally(a,o)).sort(near(a))[0]||a;
 if(dist(a,T)>sk.r+.3)return fail(a,`${a.name}の${sk.n}は射程外！`,done);
 const gk=gnOf(a.cls,sk);if(a.use)a.use[gk]=(a.use[gk]||0)+1;ev({t:'fx',k:'def',a:T.id,c:0x66ff66});
 if(q.a==='tend'){const dd=rollA(2,6),tot=sumA(dd),h=Math.min(tot,T.mhp-T.hp);rollEv(`${a.name}の手当`,dd.map(v=>({s:6,v})),tot,`回復 ${tot}`,null);
@@ -377,59 +409,55 @@ else if(it.use==='bundle'){const free=20-a.inv.length+(s.n<=1?1:0),cap=sumA(a.in
  if(--s.n<=0)a.inv=a.inv.filter(x=>x!==s);for(let i=0;i<100;i++)addItem(a,'q100');log(`${a.name}が札束を100Q札100枚に両替した`);return 1}
 else if(it.use==='hng'){const g=it.v/a.st.siz;a.hng=Math.min(100,a.hng+g);num(a,'HNG+'+(Math.round(g*10)/10),'#fc6');log(`${a.name}が${it.n}を食べた HNG+${(Math.round(g*10)/10)}`)}
 else if(it.use==='smoke'){a.hp-=5;a.san=Math.min(a.msan,a.san+10);num(a,'SAN+10','#c6f');log(`${a.name}が煙草を吸った HP-5 SAN+10`);if(a.hp<=0&&a.alive)kill(a)}
-else if(it.use==='mirror'){const l=LM.find(x=>x.id===dest);if(!l||!a.vis[dest])return 0;const inB=B.ph!=='idle',L=inB?Object.values(A).filter(p=>p.team==='p'&&p.alive):[a];
+else if(it.use==='mirror'){const l=LM.find(x=>x.id===dest);if(!l||!a.vis[dest])return 0;const inBt=B!==GB,L=inBt?Object.values(A).filter(p=>p.team==='p'&&p.alive&&ally(a,p)&&B.mem.includes(p.id)):[a];
  L.forEach(p=>{const x=l.x+(Math.random()-.5)*4,z=l.z+(Math.random()-.5)*4;p.x=x;p.z=z;p.lx=null;ev({t:'tp',id:p.id,x,z})});
- if(inB){B.eng=[];B.ph='idle';B.abort=1;B.dw=null;ENT=[]}log(`${a.name}は次元の鏡で${l.n}へワープした${inB?'（全員が戦闘から離脱）':''}`)}
+ if(inBt){const bt=B;bt.mem=bt.mem.filter(id=>!L.some(p=>p.id===id));L.forEach(p=>{p.q=null});evalBattle(bt)}log(`${a.name}は次元の鏡で${l.n}へワープした${inBt?'（味方全員が戦闘から離脱）':''}`)}
 if(--s.n<=0)a.inv=a.inv.filter(x=>x!==s);return 1}
 function entry(e,done){const a=e.a,q=e.q;if(!a.alive||a.gone)return done();
 if(q.a==='wait'){log(`${a.name}は${a.san<=0?'動けない':'様子を見ている'}`);return at(.6,done)}
 if(q.a==='use'){if(!applyUse(a,q.iid,q.dest))log(`${a.name}：道具が見つからない`);return at(1.2,done)}
 if(isAtk(q))attack(e,done);else support(e,done)}
 function beginRound(){B.rd++;B.att=0;B.hit=0;const L=[];
-Object.values(A).forEach(a=>{if(!a.alive||!(a.team==='p'||B.eng.includes(a.g)))return;a.dodges=0;a.gone=0;let q=a.team==='p'?a.q:aiPick(a);a.q=null;
+Object.values(A).forEach(a=>{if(!a.alive||!inB(a))return;a.dodges=0;a.gone=0;let q=a.team==='p'?a.q:aiPick(a);a.q=null;
 if(a.team==='p'&&a.san<=0)q={a:'wait'};
 if(a.noAtk>0){a.noAtk--;if(q&&isAtk(q)){log(`${a.name}は反動で攻撃できない`);q={a:'wait'}}}
 L.push({a,q:q||{a:'wait'}})});
-L.sort((x,y)=>y.a.spd-x.a.spd||Math.random()-.5);L.forEach((e,i)=>e.i=i);ENT=L;
+L.sort((x,y)=>y.a.spd-x.a.spd||Math.random()-.5);L.forEach((e,i)=>e.i=i);B.ENT=L;
 ev({t:'order',o:L.map(x=>`${x.a.name}：${qn(x.a,x.q)}`)});log(`── ラウンド${B.rd} ──`);runEntries()}
-function runEntries(){B.ph='perform';let i=0;const nxt=()=>{if(B.abort){B.abort=0;return}if(i>=ENT.length)return at(.4,endRound);const e=ENT[i++];entry(e,()=>at(.3,nxt))};at(.3,nxt)}
-function endRound(){const S_=Object.values(A).filter(a=>a.surg&&a.surg.rd===B.rd&&a.alive);let i=0;
+function runEntries(){B.ph='perform';let i=0;const nxt=()=>{if(i>=B.ENT.length)return at(.4,endRound);const e=B.ENT[i++];entry(e,()=>at(.3,nxt))};at(.3,nxt)}
+function endRound(){const S_=Object.values(A).filter(a=>a.surg&&a.surg.rd===B.rd&&a.alive&&B.mem.includes(a.id));let i=0;
 const nx=()=>{if(i>=S_.length)return fin();const a=S_[i++],T=A[a.surg.t];a.surg=null;if(!T||!a.alive)return nx();
  const dd=rollA(10,4),tot=sumA(dd);rollEv(`${a.name}の緊急手術`,dd.map(v=>({s:4,v})),tot,`${T.name}のHPを${tot}回復`,null);
  at(1.5,()=>{const h=Math.min(tot,T.mhp-(T.alive?T.hp:0));if(!T.alive){T.alive=1;T.hp=0;log(`✨ ${T.name}が緊急手術で復活！`)}T.hp+=h;pay(a,Math.ceil(h/2));num(T,'+'+h,'#6f6');log(`${a.name}の緊急手術→${T.name} HP+${h}`)});at(2.4,nx)};
-const fin=()=>{Object.values(A).forEach(a=>{a.dodges=0;if(a.armorLeft>0&&--a.armorLeft===0)a.armor=0;if(a.surg&&!a.alive)a.surg=null;if(a.nt>0)a.nt--});if(B.att>0){if(B.hit===0)B.oor=1;else{B.oor=0;B.stale=0}}if(!checkEnd()){B.ph='reserve';B.tm=CFG.reserve;B.el=0}};nx()}
+const fin=()=>{Object.values(A).filter(inB).forEach(a=>{a.dodges=0;if(a.armorLeft>0&&--a.armorLeft===0)a.armor=0;if(a.surg&&!a.alive)a.surg=null;if(a.nt>0)a.nt--});if(B.att>0){if(B.hit===0)B.oor=1;else{B.oor=0;B.stale=0}}if(!evalBattle(B)){B.ph='reserve';B.tm=CFG.reserve;B.el=0}};nx()}
 function grow(P){P.forEach(p=>{const u=p.use||{},ks=Object.keys(u).filter(k=>u[k]>0);p.use={};if(!ks.length||Math.random()>=.25)return;
 const mx=Math.max(...ks.map(k=>u[k])),c=ks.filter(k=>u[k]===mx),g=c[Math.floor(Math.random()*c.length)];if(p.ms[g]<100){p.ms[g]++;ev({t:'mup',id:p.id,g:MSN[g],v:p.ms[g]})}})}
 function growStats(P,lost){P.forEach(p=>{const m=[];for(let i=0;i<p.hp0n;i++)if(Math.random()<.1&&p.mhp<150){p.mhp++;p.hp++;m.push('HP+1')}
 for(let i=0;i<p.mp0n;i++)if(Math.random()<.05&&p.mmp<150){p.mmp++;p.mp++;m.push('MP+1')}
 if(lost&&Math.random()<.1&&p.msan<150){p.msan++;m.push('SAN+1')}p.hp0n=p.mp0n=0;if(m.length)ev({t:'grow',id:p.id,m:'成長！ '+m.join(' ')})})}
-function checkEnd(){const all=Object.values(A),P=all.filter(a=>a.team==='p'),E=all.filter(a=>a.team==='e');
-if(P.length&&!P.some(p=>p.alive)){log('☠ 全滅… 最初からやり直します');growStats(P,1);P.forEach(p=>{p.hp=p.mhp;p.mp=p.mmp;p.alive=1;p.q=null;p.armor=0;p.use={};p.surg=null;p.ndr=0;p.ndn=0;p.san=Math.max(p.san,1)});E.forEach(e=>delete A[e.id]);const keep=LOOT;initWorld();LOOT=keep;B.eng=[];B.ph='idle';B.dw=null;ev({t:'tp',x:-3+Math.random()*6,z:3});return 1}
-if(B.eng.every(g=>!E.some(e=>e.g===g&&e.alive))){grow(P);growStats(P,0);P.forEach(p=>{if(!p.alive){p.alive=1;p.hp=Math.ceil(p.mhp*.4)}else p.hp=Math.min(p.mhp,p.hp+Math.ceil(p.mhp*.25));p.armor=0;p.ndr=0;p.ndn=0;p.surg=null});
-B.eng=[];B.ph='idle';log(E.some(e=>e.alive)?'🏆 戦闘に勝利！':'🎉 全ての敵を倒した！クリア！');return 1}return 0}
 function spotLot(p){const g=SPOT.g;if(Math.random()<.25&&p.ms[g]<100){p.ms[g]++;SPOT.gain++;ev({t:'mup',id:p.id,g:MSN[g],v:p.ms[g]})}else ev({t:'grow',id:p.id,m:'修行の抽選…今回は上がらなかった'});
 if(SPOT.gain>=5||Math.random()<.1){log('修行場が消えた');SPOT=null;spotAt=clock+60+Math.random()*120}}
-function tick(dt){clock+=dt;const due=sched.filter(s=>s.t<=clock);sched=sched.filter(s=>s.t>clock);due.forEach(s=>s.fn());
-if(B.dw){B.dw.tm-=dt;if(B.dw.tm<=0){const w=B.dw;B.dw=null;w.cb('none')}}
+function snapFor(rid){const me_=A[rid],bt=me_?bOf(me_):null,w=bt&&bt.dw,vis=a=>a.team==='e'||!me_||a.id===rid||ally(me_,a)||(bt&&bt.mem.includes(a.id))||dist(me_,a)<=CFG.see;
+return{t:'s',B:bt?{id:bt.id,ph:bt.ph,tm:+bt.tm.toFixed(1),rd:bt.rd,mx:CFG.reserve,dw:w?{i:w.i,t:w.t,aid:w.aid,an:w.an,mg:w.mg,tm:+w.tm.toFixed(1),dmg:w.dmg}:null}:{id:'',ph:'idle',tm:0,rd:0,mx:CFG.reserve,dw:null},
+W:worldSnap(),L:LOOT.map(l=>[l.id,l.k,+l.x.toFixed(1),+l.z.toFixed(1)]),T:SPOT?[SPOT.g,+SPOT.x.toFixed(1),+SPOT.z.toFixed(1),SPOT.tm]:null,
+P:Object.values(A).filter(vis).map(a=>({id:a.id,tm:a.team,tc:a.tc,n:a.name,c:a.cls,x:+a.x.toFixed(2),z:+a.z.toFixed(2),ry:+a.ry.toFixed(2),h:a.hp,m:a.mhp,mp:a.mp,mm:a.mmp,al:a.alive,q:a.q?qn(a,a.q):'',qt:a.q&&a.q.t||'',sc:a.sc||1,col:a.col,
+ st:a.st,inv:a.inv,eq:a.eq,na:a.noAtk,ar:a.armor,db:a.db,san:a.san,msan:a.msan,hng:Math.round((a.hng||0)*10)/10,mov:a.mov,ms:a.ms,dg:a.dodges||0,...pX(a)}))}}
+function tick(dt){clock+=dt;B=GB;const due=sched.filter(s=>s.t<=clock);sched=sched.filter(s=>s.t>clock);due.forEach(s=>s.fn());B=GB;
 const all=Object.values(A),P=all.filter(a=>a.team==='p'),E=all.filter(a=>a.team==='e');
-worldTick(dt,P);if(B.oor&&(B.ph==='reserve'||B.ph==='perform')){B.stale+=dt;if(B.stale>=30)suspendBattle(P)}P.forEach(p=>{const w=inWater(p.x,p.z);if(w&&!p.inw){p.inw=1;ev({t:'grow',id:p.id,m:'🌊 水に入った：疲れやすい（HNG消費2倍）'})}else if(!w)p.inw=0;p.hacc=(p.hacc||0)+dt*(w?2:1);if(p.hacc>=CFG.hngTick){p.hacc=0;p.hng=Math.max(0,p.hng-1);if(B.ph==='idle'){if(p.hng<=10)p.san=Math.max(0,p.san-1);else if(p.hng>=90)p.san=Math.min(p.msan,p.san+2)}}});
-if(!SPOT&&clock>=spotAt&&B.ph==='idle'){const gs=Object.keys(MSN),sp0=spotPos();SPOT={g:gs[Math.floor(Math.random()*gs.length)],x:sp0[0],z:sp0[1],tm:{},gain:0};log(`✨ 修行場が現れた（${MSN[SPOT.g]}）`)}
-if(SPOT&&B.ph==='idle')for(const p of P){if(!SPOT)break;if(!p.alive||Math.hypot(p.x-SPOT.x,p.z-SPOT.z)>CFG.spotR)continue;SPOT.tm[p.id]=(SPOT.tm[p.id]||0)+dt;if(SPOT.tm[p.id]>=10){SPOT.tm[p.id]-=10;spotLot(p)}}
-for(const e of E)if(e.alive&&!B.eng.includes(e.g)&&P.some(p=>p.alive&&!inSafe(p.x,p.z)&&dist(p,e)<CFG.aggro))B.eng.push(e.g);
+worldTick(dt,P);
+P.forEach(p=>{const w=inWater(p.x,p.z);if(w&&!p.inw){p.inw=1;ev({t:'grow',id:p.id,m:'🌊 水に入った：疲れやすい（HNG消費2倍）'})}else if(!w)p.inw=0;p.hacc=(p.hacc||0)+dt*(w?2:1);if(p.hacc>=CFG.hngTick){p.hacc=0;p.hng=Math.max(0,p.hng-1);if(!bOf(p)){if(p.hng<=10)p.san=Math.max(0,p.san-1);else if(p.hng>=90)p.san=Math.min(p.msan,p.san+2)}}});
+if(!SPOT&&clock>=spotAt){const gs=Object.keys(MSN),sp0=spotPos();SPOT={g:gs[Math.floor(Math.random()*gs.length)],x:sp0[0],z:sp0[1],tm:{},gain:0};log(`✨ 修行場が現れた（${MSN[SPOT.g]}）`)}
+if(SPOT)for(const p of P){if(!SPOT)break;if(!p.alive||bOf(p)||Math.hypot(p.x-SPOT.x,p.z-SPOT.z)>CFG.spotR)continue;SPOT.tm[p.id]=(SPOT.tm[p.id]||0)+dt;if(SPOT.tm[p.id]>=10){SPOT.tm[p.id]-=10;spotLot(p)}}
 for(const p of P)if(p.alive)for(const l of LOOT.slice())if(Math.hypot(l.x-p.x,l.z-p.z)<1.8){if(l.k==='chest'){LOOT=LOOT.filter(x=>x!==l);openChest(p,l)}else if(addItem(p,l.k)){LOOT=LOOT.filter(x=>x!==l);log(`${p.name}が${IT[l.k].n}を拾った`)}}
-if(B.ph==='idle'&&B.eng.length){B.oor=0;B.stale=0;B.ph='reserve';B.tm=CFG.reserve;B.el=0;P.forEach(p=>p.hng=Math.max(0,p.hng-(inWater(p.x,p.z)?10:5)));log('⚔ 戦闘開始！ 行動を予約しよう（HNG-5。水上は-10）')}
-else if(B.ph==='reserve'){B.tm-=dt;B.el+=dt;const al=P.filter(p=>p.alive),en=E.filter(e=>e.alive&&B.eng.includes(e.g));
-if(!al.length)checkEnd();
-else if(en.length&&!en.some(e=>e.nf)&&en.every(e=>al.every(p=>dist(e,p)>CFG.flee))){growStats(P,0);B.eng=[];B.ph='idle';log('🏃 戦闘から離脱した')}
-else if(B.tm<=0||(B.el>=CFG.min&&al.every(p=>p.q||p.san<=0)))beginRound()}
-for(const e of E){if(!e.alive||!B.eng.includes(e.g)||B.dw)continue;const al=P.filter(p=>p.alive&&!inSafe(p.x,p.z));if(!al.length)break;
+manageBattles(P,E);
+for(const bt of BT.slice()){if(bt.dead)continue;B=bt;battleTick(dt,P);B=GB}
+for(const e of E){if(!e.alive)continue;const bt=BT.find(b=>b.eng.includes(e.g));if(!bt||bt.dw)continue;const al=P.filter(p=>p.alive&&bt.mem.includes(p.id)&&!inSafe(p.x,p.z));if(!al.length)continue;
 al.sort((x,y)=>dist(e,x)-dist(e,y));const n=al[0],D=dist(e,n);if(D>e.rng*.8){e.x+=(n.x-e.x)/D*e.mv*dt;e.z+=(n.z-e.z)/D*e.mv*dt}if(e.zone==='sea'){e.x=Math.max(WATER.x0+1,Math.min(WATER.x1-1,e.x));e.z=Math.max(WATER.z0+1,Math.min(WATER.z1-1,e.z))}e.ry=Math.atan2(n.x-e.x,n.z-e.z)}
 for(const x of E)for(const y of E)if(x!==y&&x.alive&&y.alive){const D=dist(x,y),m=1.4*(x.sc+y.sc)/2+.6;if(D<m&&D>.01){x.x+=(x.x-y.x)/D*.05;x.z+=(x.z-y.z)/D*.05}}
-snapAcc+=dt;if(snapAcc>=.1){snapAcc=0;const w=B.dw,s={t:'s',B:{ph:B.ph,tm:+B.tm.toFixed(1),rd:B.rd,mx:CFG.reserve,dw:w?{i:w.i,t:w.t,aid:w.aid,an:w.an,mg:w.mg,tm:+w.tm.toFixed(1),dmg:w.dmg}:null},W:worldSnap(),L:LOOT.map(l=>[l.id,l.k,+l.x.toFixed(1),+l.z.toFixed(1)]),T:SPOT?[SPOT.g,+SPOT.x.toFixed(1),+SPOT.z.toFixed(1),SPOT.tm]:null,
-P:all.map(a=>({id:a.id,tm:a.team,n:a.name,c:a.cls,x:+a.x.toFixed(2),z:+a.z.toFixed(2),ry:+a.ry.toFixed(2),h:a.hp,m:a.mhp,mp:a.mp,mm:a.mmp,al:a.alive,q:a.q?qn(a,a.q):'',qt:a.q&&a.q.t||'',sc:a.sc||1,col:a.col,
- st:a.st,inv:a.inv,eq:a.eq,na:a.noAtk,ar:a.armor,db:a.db,san:a.san,msan:a.msan,hng:Math.round((a.hng||0)*10)/10,mov:a.mov,ms:a.ms,dg:a.dodges||0,...pX(a)}))};onMsg(s);Object.values(conns).forEach(c=>c.open&&c.send(s))}}
-function hostRecv(id,m,c){
-if(m.t==='join'){mkP(id,m.name,m.cls,m.st);if(c)c.send({t:'hi',id});log(`${m.name}が参加した`);return}
+snapAcc+=dt;if(snapAcc>=.1){snapAcc=0;onMsg(snapFor(myId));Object.entries(conns).forEach(([cid,c])=>c.open&&c.send(snapFor(cid)))}}
+function hostRecv(id,m,c){const a0=A[id],pB=B;B=(a0&&bOf(a0))||GB;try{hostRecv0(id,m,c)}finally{B=pB}}
+function hostRecv0(id,m,c){
+if(m.t==='join'){mkP(id,m.name,m.cls,m.st,m.tc);if(c)c.send({t:'hi',id});log(`${m.name}が参加した`);return}
 const a=A[id];if(!a)return;
 if(m.t==='pos'){if(a.lx!=null){const s=Math.hypot(m.x-a.lx,m.z-a.lz);if(s<4&&a.alive){a.dist+=s;while(a.dist>=1000){a.dist-=1000;if(Math.random()<.1&&a.mov<150){a.mov++;ev({t:'grow',id:a.id,m:'MOV+1'})}}}}a.lx=a.x=m.x;a.lz=a.z=m.z;a.ry=m.ry}
 else if(m.t==='act'){if(a.alive&&a.san>0&&B.ph!=='idle'&&(m.a==='atk'||m.a==='wait'||(SKL[m.a]&&!skOk(a,a.cls,m.a))))a.q={a:m.a,t:m.tg}}
@@ -459,11 +487,12 @@ const mkRing=(c,a,b)=>{const m=new THREE.Mesh(new THREE.RingGeometry(a,b,48),new
 const rangeRing=mkRing(0xffee66,.98,1),selRing=mkRing(0xff4444,.9,1.1),atkRing=mkRing(0xff2222,.8,1.3),tR=[];
 const getR=i=>{while(tR.length<=i)tR.push(mkRing(0xffdd33,.95,1.2));return tR[i]};
 const meP=()=>S&&S.P.find(p=>p.id===myId);
+const myTc=()=>{const m=meP();return m?m.tc:''},isHos=p=>p.tm==='e'||(p.tm==='p'&&p.id!==myId&&p.tc!==myTc()),isAlly=p=>p.tm==='p'&&(p.id===myId||p.tc===myTc());
 const mkLbl=(txt,sz)=>{const l=document.createElement('div');l.className='l';l.style.fontSize=sz+'px';l.textContent=txt;$('labels').appendChild(l);return l};
 function mkView(p){const g=new THREE.Group(),mat=new THREE.MeshLambertMaterial({color:p.tm==='p'?CL[p.c].col:p.col});
 const b=new THREE.Mesh(new THREE.CylinderGeometry(.45,.55,1.3,12),mat);b.position.y=.65;const h=new THREE.Mesh(new THREE.SphereGeometry(.38,12,10),mat);h.position.y=1.6;
 const n=new THREE.Mesh(new THREE.BoxGeometry(.2,.2,.5),new THREE.MeshLambertMaterial({color:0xffffff}));n.position.set(0,1,.55);const cp=new THREE.Mesh(new THREE.BoxGeometry(.9,1.2,.08),new THREE.MeshLambertMaterial({color:0xffd700}));cp.position.set(0,.9,-.5);cp.visible=false;g.add(b,h,n,cp);g.scale.setScalar(p.sc);g.userData.id=p.id;scene.add(g);
-const l=document.createElement('div');l.className='l';l.innerHTML=`<b style="color:${p.tm==='e'?'#f99':'#cfe'}">${p.n}</b>${p.tm==='p'?'<div class="hpn"></div>':''}<div class="hp"><i></i></div>`;$('labels').appendChild(l);
+const l=document.createElement('div');l.className='l';l.innerHTML=`<b style="color:${isHos(p)?'#f99':'#cfe'}">${p.n}</b>${p.tm==='p'&&!isHos(p)?'<div class="hpn"></div>':''}<div class="hp"><i></i></div>`;$('labels').appendChild(l);
 return{g,cape:cp,mat,l,hn:l.querySelector('.hpn'),hb:l.querySelector('i'),x:p.x,z:p.z,ox:0,oz:0,fl:0,sc:p.sc}}
 const dieHtml=(list,fix)=>list.map(x=>`<span class="die ${fix?'fix':''} ${x.neg?'neg':''}">${x.neg?'−':''}${x.v}</span>`).join('');
 function showRoll(o){if(o.o&&o.o!==myId)return;const box=$('dice');box.hidden=false;clearTimeout(diceT);box.innerHTML=`<div class="t">${o.w}</div><div class="dd"></div><div class="rr"></div><div class="x"></div>`;const dd=box.querySelector('.dd');let k=0;
@@ -487,7 +516,7 @@ else if(spotV){scene.remove(spotV.m);scene.remove(spotV.pl);spotV.l.remove();spo
 else if(o.t==='hi')myId=o.id;
 else if(o.t==='log'){logs.push(o.m);logs=logs.slice(-6);$('log').innerHTML=logs.join('<br>')}
 else if(o.t==='roll')showRoll(o);
-else if(o.t==='dshow'){const el=document.createElement('div');el.className='dn '+(o.sd==='e'?'e':'p');el.textContent=o.v;$('dmgs').appendChild(el);dmgEls[o.id]=el}
+else if(o.t==='dshow'){const el=document.createElement('div');const ap=S&&S.P.find(p=>p.id===o.aid);el.className='dn '+((ap?isHos(ap):o.sd==='e')?'e':'p');el.textContent=o.v;$('dmgs').appendChild(el);dmgEls[o.id]=el}
 else if(o.t==='dend')dEnd(o);
 else if(o.t==='num'){const v=view[o.id];if(!v)return;const e=document.createElement('div');e.className='num';e.textContent=o.x;e.style.color=o.c;
 const p=scr(v.x,2.8*v.sc,v.z);e.style.left=(p.x+1)/2*innerWidth+'px';e.style.top=(1-p.y)/2*innerHeight+'px';document.body.appendChild(e);setTimeout(()=>e.remove(),1100);
@@ -507,7 +536,7 @@ else if(o.k==='burst')burst(a,o.c,14);
 else if(o.k==='ok'||o.k==='def'){if(o.k==='ok')burst(a,o.c,10);const m=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshBasicMaterial({color:o.c,transparent:true,opacity:.5}));scene.add(m);run(.75,p=>{m.position.set(a.x,1,a.z);m.scale.setScalar(.8+p*.8);m.material.opacity=.5*(1-p)},()=>scene.remove(m))}}
 const mpW=p=>p.inv.find(i=>i.id===p.eq.w),mpS=p=>p.inv.find(i=>i.id===p.eq.s);
 const myRng=p=>{const w=p&&mpW(p);return w?IT[w.k].r:3};
-function nearestEnemy(){let best=null,bd=1e9;S.P.forEach(p=>{if(p.tm==='e'&&p.al){const D=Math.hypot(p.x-me.x,p.z-me.z);if(D<bd){bd=D;best=p}}});return best}
+function nearestEnemy(){let best=null,bd=1e9;S.P.forEach(p=>{if(isHos(p)&&p.al){const D=Math.hypot(p.x-me.x,p.z-me.z);if(D<bd){bd=D;best=p}}});return best}
 function uiState(){if(!S)return;const b=S.B,mp=meP();
 $('ph').textContent=b.ph==='idle'?idleText():b.ph==='reserve'?`行動予約 残り${b.tm}秒（全員予約で即開始／装備変更OK）`:'判定中（次の行動を予約できます）';
 $('bar').firstChild.style.width=b.ph==='reserve'?(b.tm/b.mx*100)+'%':b.ph==='perform'?'100%':'0';
@@ -516,8 +545,8 @@ if(mp){const st=mp.hng>=90?'満腹':mp.hng<=10?'空腹':'';
  $('me').innerHTML=`💰${mp.gd}Q SAN${mp.san}/${mp.msan} HNG${Math.round(mp.hng)}${st?'('+st+')':''}${mp.ar?' アーマー'+mp.ar:''}<br>${mp.san<=0?'正気を失い行動不能':mp.al?(b.ph!=='idle'?(mp.q?'予約：'+mp.q:'行動を選んでください'):''):'戦闘不能'}`;
  $('hpb').hidden=false;$('hpb').querySelector('i').style.height=mp.h/mp.m*100+'%';$('hpb').querySelector('i').style.background=mp.h/mp.m>.5?'#4c4':mp.h/mp.m>.25?'#fc4':'#f44';$('hpb').querySelector('.h').textContent=mp.h;$('hpb').classList.toggle('low',mp.h/mp.m<=.25);
  $('mpb').hidden=false;$('mpb').querySelector('i').style.height=mp.mp/mp.mm*100+'%';$('mpb').querySelector('.h').textContent=mp.mp}
-$('party').innerHTML=S.P.filter(p=>p.tm==='p').map(p=>`<div style="color:${p.al?'#fff':'#f88'}">${p.id===myId?'▶':''}${p.n} ${p.h}/${p.m}</div>`).join('');
-const tg=S.P.find(p=>p.id===sel&&p.tm==='e'&&p.al)||(b.ph!=='idle'?nearestEnemy():null);
+$('party').innerHTML=S.P.filter(isAlly).map(p=>`<div style="color:${p.al?'#fff':'#f88'}">${p.id===myId?'▶':''}${p.n} ${p.h}/${p.m}</div>`).join('');
+const tg=S.P.find(p=>p.id===sel&&isHos(p)&&p.al)||(b.ph!=='idle'?nearestEnemy():null);
 if(tg){$('tg').hidden=false;$('tg').querySelector('.n').textContent=tg.n;$('tg').querySelector('i').style.height=tg.h/tg.m*100+'%';$('tg').querySelector('.h').textContent=tg.h}else $('tg').hidden=true;
 document.querySelectorAll('#acts button').forEach(bt=>{const k=bt.dataset.k;let off=!mp||!mp.al||mp.san<=0||b.ph==='idle';
  if(k==='atk'&&mp&&mp.na)off=true;if(k==='items')off=false;bt.disabled=off;bt.classList.toggle('on',!!(mp&&mp.q&&(k==='atk'?mp.q.startsWith('攻撃'):k==='wait'?mp.q.startsWith('待機'):k==='use'?mp.q.startsWith('道具'):false)))});
@@ -535,7 +564,7 @@ if(invTab==='st'){h+=`<div style="margin-top:6px"><b>能力値</b> ${ST.map(([k,
  Object.keys(MSN).map(k=>`<div class="ms">${MSN[k]} ${mp.ms[k]}/100　ティア${tierOf(mp.ms[k])}まで解放<div class="b"><i style="width:${mp.ms[k]}%"></i></div></div>`).join('')+`<small style="color:#9ab">解放：10=T2 / 20=T3 / 30=T4 / 50=T5 / 70=T6。戦闘に勝つと25%で最も使ったジャンル+1。修行場でも上がります。武器の熟練度が、その武器のIP未満だと、使うたび1%で壊れます。</small>`}
 else{h+=`<div class="grid">`+Array.from({length:20},(_,i)=>{const s=mp.inv[i];if(!s)return `<div class="slot"></div>`;const on=isEq(s);
  return `<div class="slot ${on?'eq':''} ${invSel===s.id?'sel':''}" data-id="${s.id}">${on?'<i>装備中</i>':''}${IT[s.k].ic}${s.n>1?`<small>${s.n}</small>`:''}</div>`}).join('')+`</div>`;
- const s=mp.inv.find(x=>x.id===invSel);if(s){const it=IT[s.k],on=isEq(s),nb=S.P.filter(p=>p.tm==='p'&&p.id!==myId&&p.al&&Math.hypot(p.x-me.x,p.z-me.z)<=6);
+ const s=mp.inv.find(x=>x.id===invSel);if(s){const it=IT[s.k],on=isEq(s),nb=S.P.filter(p=>isAlly(p)&&p.id!==myId&&p.al&&Math.hypot(p.x-me.x,p.z-me.z)<=6);
   h+=`<div><b>${it.ic} ${sName(s)}</b>　IP${sIP(s)}${it.t==='w'?`（壊れ判定IP${breakIP(s.k)}）`:''}<br><small>${sTxt(s)}</small><br>`+(it.t==='c'?(it.use==='mirror'?mp.vis.map(id=>`<button data-dest="${id}">${LM.find(l=>l.id===id).n}へ</button>`).join(' '):it.use?`<button id="ub">${it.use==='bundle'?'100Q札に両替':'使う'}</button>`:''):'wsa'.includes(it.t)?`<button id="eb" class="${on?'on':''}">${on?'外す':'装備する'}</button>`:'')+' '+nb.map(p=>`<button data-give="${p.id}">${p.n}に渡す</button>`).join(' ')+`</div>`}
  else h+=`<small style="color:#9ab">アイテムをタップすると詳細が出ます（消費アイテムは16個までスタック）</small>`}
 box.innerHTML=h;$('ix').onclick=()=>$('inv').hidden=true;$('mapb').onclick=()=>{miniOn=!miniOn;$('mini').hidden=!miniOn;box.dataset.s='';renderInv(meP())};
@@ -550,7 +579,7 @@ box.innerHTML='<b>技を選ぶ</b> <button id="sx" style="float:right;padding:3p
 $('sx').onclick=()=>$('skl').hidden=true;box.querySelectorAll('button[data-k]').forEach(bt=>bt.onclick=()=>{act(bt.dataset.k);$('skl').hidden=true})}
 function buildActs(){$('acts').innerHTML='';[['atk','攻撃'],['run','距離をとる'],['skills','技'],['items','道具'],['wait','待機']].forEach(([k,n])=>{const b=document.createElement('button');b.innerHTML=n;b.dataset.n=n;b.dataset.k=k;
 b.onclick=()=>{if(k==='skills'){$('skl').hidden=!$('skl').hidden;$('skl').dataset.s='';renderSkl(meP())}else if(k==='items'){invTab='inv';openInv()}else if(k==='run')toggleRun();else act(k)};$('acts').appendChild(b)})}
-function toggleRun(){if(retreat){retreat=null;return}const t=S&&(S.P.find(p=>p.id===sel&&p.tm==='e'&&p.al)||nearestEnemy());if(!t){toast('離れる対象がいない');return}retreat=t.id;toast('全速力で離れます（画面をタップで止まる）')}
+function toggleRun(){if(retreat){retreat=null;return}const t=S&&(S.P.find(p=>p.id===sel&&isHos(p)&&p.al)||nearestEnemy());if(!t){toast('離れる対象がいない');return}retreat=t.id;toast('全速力で離れます（画面をタップで止まる）')}
 function atkLabel(mp){const w=mpW(mp),dd=w?IT[w.k].d:[1,2];let t=`${dd[0]}D${dd[1]}`;if(w&&w.x&&w.x.bd)t+=`+${w.x.bd[0]}D${w.x.bd[1]}`;if(w){const m=mp.ms[GK[IT[w.k].g]];if(m>=10)t+=`+${Math.floor(m/10)}D4`}t+=dbTxt(mp.db);if(mp.c==='healer')t+='-1D4';return (w?sName(w):'パンチ')+' '+t}
 function uiExtra(mp){if(!mp)return;const ab=$('acts').querySelector('[data-k="atk"]');if(ab){const t=`攻撃<br><small>${atkLabel(mp)}</small>`;if(ab.dataset.l!==t){ab.dataset.l=t;ab.innerHTML=t}}
 const rb=$('acts').querySelector('[data-k="run"]');if(rb){rb.innerHTML=retreat?'逃走中<br><small>タップで停止</small>':'距離をとる';rb.classList.toggle('on',!!retreat)}
@@ -602,11 +631,11 @@ function drawMini(now){if(now-miniT<250||!S||!miniOn)return;miniT=now;const c=$(
 c.fillStyle='#2f7fc2';c.globalAlpha=.7;c.fillRect(X(WATER.x0),Z(WATER.z0),(WATER.x1-WATER.x0)*k,(WATER.z1-WATER.z0)*k);
 LM.forEach(l=>{c.fillStyle='#'+l.col.toString(16).padStart(6,'0');c.globalAlpha=.6;c.beginPath();c.arc(X(l.x),Z(l.z),l.r*k,0,6.28);c.fill()});c.globalAlpha=1;
 if(S.T){c.fillStyle='#fc4';c.fillRect(X(S.T[1])-3,Z(S.T[2])-3,6,6)}
-S.P.forEach(p=>{if(!p.al)return;const me_=p.id===myId;if(p.tm==='e'&&Math.hypot(p.x-me.x,p.z-me.z)>CFG.aggro*1.5)return;c.fillStyle=me_?'#0f0':p.tm==='p'?'#6df':'#f44';c.fillRect(X(me_?me.x:p.x)-2,Z(me_?me.z:p.z)-2,4,4)})}
+S.P.forEach(p=>{if(!p.al)return;const me_=p.id===myId;if(isHos(p)&&Math.hypot(p.x-me.x,p.z-me.z)>CFG.aggro*1.5)return;c.fillStyle=me_?'#0f0':isAlly(p)?'#6df':'#f44';c.fillRect(X(me_?me.x:p.x)-2,Z(me_?me.z:p.z)-2,4,4)})}
 function openInv(){$('inv').hidden=false;$('inv').dataset.s='';renderInv(meP())}
 function act(k){if(!S)return;const mp=meP();if(!mp||!mp.al||mp.san<=0||S.B.ph==='idle')return;const tg=k==='atk'?'e':k==='wait'?null:SKL[k].tg;let t=null;
-if(tg==='e'){const s=S.P.find(p=>p.id===sel&&p.tm==='e'&&p.al)||nearestEnemy();t=s&&s.id}
-else if(tg==='a'){let s=S.P.find(p=>p.id===sel&&p.tm==='p'&&(p.al||k==='surgery'));if(!s){const al=S.P.filter(p=>p.tm==='p'&&(p.al||k==='surgery'));s=al.sort((a,b)=>k==='genki'?a.mp/a.mm-b.mp/b.mm:a.h/a.m-b.h/b.m)[0]}t=s&&s.id}
+if(tg==='e'){const s=S.P.find(p=>p.id===sel&&isHos(p)&&p.al)||nearestEnemy();t=s&&s.id}
+else if(tg==='a'){let s=S.P.find(p=>p.id===sel&&isAlly(p)&&(p.al||k==='surgery'));if(!s){const al=S.P.filter(p=>isAlly(p)&&(p.al||k==='surgery'));s=al.sort((a,b)=>k==='genki'?a.mp/a.mm-b.mp/b.mm:a.h/a.m-b.h/b.m)[0]}t=s&&s.id}
 send({t:'act',a:k,tg:t})}
 addEventListener('keydown',e=>keys[e.key.toLowerCase()]=1);addEventListener('keyup',e=>keys[e.key.toLowerCase()]=0);
 addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();rd.setSize(innerWidth,innerHeight)});
@@ -639,9 +668,9 @@ place(v.l,v.x,(p.al?2.6:.8)*v.sc,v.z,1);v.hb.style.width=p.h/p.m*100+'%';if(v.hn
 for(const id in lootV){const l=lootV[id];l.m.rotation.y+=dt*2;place(l.l,l.x,1.4,l.z,Math.hypot(l.x-me.x,l.z-me.z)<14)}
 if(spotV)place(spotV.l,spotV.x,2.2,spotV.z,1);
 for(const o of wLbl)place(o.l,o.x,o.y,o.z,!(o.b&&o.b.hid&&!S.W.m.free)&&Math.hypot(o.x-me.x,o.z-me.z)<o.far);for(const b of bldV)if(b.hid)b.m.visible=!!S.W.m.free;
-const foc=S.P.find(p=>p.id===sel&&p.al&&p.tm==='e')||nearestEnemy(),sv=view[sel],pulse=1+.12*Math.sin(now/130);
+const foc=S.P.find(p=>p.id===sel&&p.al&&isHos(p))||nearestEnemy(),sv=view[sel],pulse=1+.12*Math.sin(now/130);
 selRing.visible=!!(sv&&sv.p.al);if(sv){selRing.position.x=sv.x;selRing.position.z=sv.z;selRing.scale.setScalar(sv.sc)}
-let ri=0;if(inB){const tm={};S.P.forEach(p=>{if(p.tm==='p'&&p.al&&p.qt&&view[p.qt]&&view[p.qt].p.al&&p.q&&!p.q.startsWith('待機')&&!p.q.startsWith('道具')){if(!tm[p.qt]||p.id===myId)tm[p.qt]=p.id===myId?2:1}});
+let ri=0;if(inB){const tm={};S.P.forEach(p=>{if(isAlly(p)&&p.al&&p.qt&&view[p.qt]&&view[p.qt].p.al&&p.q&&!p.q.startsWith('待機')&&!p.q.startsWith('道具')){if(!tm[p.qt]||p.id===myId)tm[p.qt]=p.id===myId?2:1}});
  for(const id in tm){const r=getR(ri++),v=view[id];r.visible=true;r.position.x=v.x;r.position.z=v.z;r.scale.setScalar(v.sc*pulse);r.material.color.setHex(tm[id]===2?0xffdd33:0x66ddff)}}
 for(;ri<tR.length;ri++)tR[ri].visible=false;
 const av=dw&&dw.t===myId&&view[dw.aid];atkRing.visible=!!av;if(av){atkRing.position.x=av.x;atkRing.position.z=av.z;atkRing.scale.setScalar(av.sc*(1.3+.25*Math.sin(now/90)))}
@@ -667,8 +696,8 @@ ST.forEach(([k,n])=>{const r=document.createElement('div');r.className='row';r.i
 $('rall').onclick=()=>{[...$('stats').children].forEach((r,i)=>{if(!r.querySelector('button').disabled)setTimeout(()=>rollStat(ST[i][0],r),i*150)})};
 Object.entries(CL).forEach(([k,c])=>{const b=document.createElement('button');b.textContent=c.n;b.onclick=()=>{myCls=k;[...$('cls').children].forEach(x=>x.classList.toggle('on',x===b));$('cn').textContent=c.note};if(k===myCls){b.className='on';$('cn').textContent=c.note}$('cls').appendChild(b)});
 function begin(code){const nm=$('nm').value||'冒険者';$('menu').hidden=true;$('hud').hidden=false;$('room').textContent=code?`部屋コード：${code}`:'ひとりプレイ';buildActs();$('mini').hidden=false;miniOn=true;$('mini').onclick=()=>{miniOn=false;$('mini').hidden=true};buildWorld();
-if(isHost){mkP('H',nm,myCls,myStats);initWorld();myId='H';let last=performance.now();setInterval(()=>{const n=performance.now();tick(Math.min((n-last)/1000,.2));last=n},50)}
-else send({t:'join',name:nm,cls:myCls,st:myStats});
+if(isHost){mkP('H',nm,myCls,myStats,$('tc').value);initWorld();myId='H';let last=performance.now();setInterval(()=>{const n=performance.now();tick(Math.min((n-last)/1000,.2));last=n},50)}
+else send({t:'join',name:nm,cls:myCls,st:myStats,tc:$('tc').value});
 cam.position.set(-8,26,19);lk.set(-8,0,6);requestAnimationFrame(frame)}
 $('bi').onclick=()=>{if($('inv').hidden)openInv();else $('inv').hidden=true};
 function needPeer(){if(typeof Peer==='undefined'){alert('PeerJSが読み込めません。ネット接続を確認してください。');return 1}}
